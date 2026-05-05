@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Audiobook Studio — Workspace</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <style>
+        .heading-list { list-style: none; max-height: 55vh; overflow-y: auto; }
+        .heading-item { padding: 10px 14px; border: var(--border); border-radius: var(--radius-sm); margin-bottom: 4px; cursor: pointer; display: flex; align-items: center; gap: var(--space-md); transition: background 0.1s; }
+        .heading-item:hover { background: var(--bg-hover); }
+        .heading-item.selected { background: var(--accent-soft); border-color: var(--accent); }
+        .heading-item .h-idx { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); min-width: 28px; }
+        .heading-item .h-preview { font-size: 0.8rem; color: var(--text-muted); margin-left: auto; max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .symbol-item { display: flex; align-items: center; gap: var(--space-md); padding: 10px 14px; border-bottom: var(--border); }
+        .symbol-char { font-size: 1.5rem; min-width: 40px; text-align: center; }
+        .pron-context { font-family: var(--font-reading); font-size: 0.95rem; color: var(--text-secondary); line-height: 1.65; margin: var(--space-sm) 0; padding: var(--space-md); background: var(--bg-input); border-radius: var(--radius-sm); }
+        .pron-context mark { background: var(--accent-soft); color: var(--accent); padding: 0 2px; border-radius: 2px; }
+        .step-section { display: none; }
+        .step-section.active { display: block; }
+
+        /* Review layout */
+        .review-layout { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: auto 1fr; height: calc(100vh - 60px); }
+        .review-nav { grid-row: 1 / -1; border-right: var(--border); overflow-y: auto; background: var(--bg-main); }
+        .review-nav-header { padding: var(--space-md); border-bottom: var(--border); }
+        .review-toolbar { grid-column: 2; padding: var(--space-sm) var(--space-lg); border-bottom: var(--border); background: var(--bg-main); display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap; }
+        .review-body { grid-column: 2; overflow-y: auto; padding: var(--space-lg); }
+        .review-text-panel { max-width: 740px; margin: 0 auto; }
+
+        .chapter-nav-item { padding: 8px 14px; cursor: pointer; font-size: 0.85rem; border-bottom: var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .chapter-nav-item:hover { background: var(--bg-hover); }
+        .chapter-nav-item.active { background: var(--accent-soft); color: var(--accent); }
+        .chapter-nav-item .ch-stats { font-size: 0.72rem; color: var(--text-muted); display: flex; gap: 6px; }
+        .filter-btn { padding: 4px 10px; border-radius: 20px; font-size: 0.78rem; background: var(--bg-elevated); border: var(--border); color: var(--text-secondary); cursor: pointer; }
+        .filter-btn:hover,.filter-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+        /* Transport bar */
+        .transport-bar { display: flex; align-items: center; gap: var(--space-sm); background: var(--bg-elevated); border: var(--border); border-radius: var(--radius-lg); padding: 6px var(--space-md); }
+        .transport-bar .t-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1rem; padding: 4px 6px; border-radius: var(--radius-sm); }
+        .transport-bar .t-btn:hover { color: var(--text-primary); }
+        .transport-bar .t-btn.play-main { font-size: 1.3rem; color: var(--accent); }
+        .transport-bar .t-seek { flex: 1; height: 28px; background: var(--bg-input); border-radius: var(--radius-sm); position: relative; cursor: pointer; overflow: hidden; min-width: 120px; }
+        .transport-bar .t-seek .t-fill { position: absolute; top: 0; left: 0; height: 100%; background: var(--accent-soft); border-right: 2px solid var(--accent); transition: width 0.08s linear; pointer-events: none; }
+        .transport-bar .t-time { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); min-width: 42px; text-align: center; }
+        .transport-bar .t-chunk-id { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted); min-width: 100px; text-align: center; }
+
+        /* Review chunk blocks */
+        .review-chunk-block { padding: var(--space-md) 0; border-bottom: 1px solid var(--bg-elevated); position: relative; cursor: pointer; border-radius: var(--radius-sm); transition: background 0.1s; }
+        .review-chunk-block:hover { background: var(--bg-card); }
+        .review-chunk-block.playing { background: var(--accent-soft); }
+        .review-chunk-block .chunk-id-label { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-faint); position: absolute; right: 0; top: var(--space-sm); }
+        .scene-break-marker { text-align: center; color: var(--text-faint); padding: var(--space-sm) 0; font-size: 0.8rem; letter-spacing: 0.3em; }
+
+        /* Tagging */
+        .tag-chat-box { max-height: 200px; overflow-y: auto; border: var(--border); border-radius: var(--radius-md); padding: var(--space-md); background: var(--bg-input); margin: var(--space-md) 0; }
+        .tag-chat-msg { margin-bottom: var(--space-sm); font-size: 0.88rem; }
+        .tag-chat-msg.user { color: var(--accent); }
+        .tag-chat-msg.system { color: var(--text-secondary); }
+        .tag-diff { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); margin: var(--space-md) 0; }
+        .tag-diff-col { padding: var(--space-md); background: var(--bg-input); border-radius: var(--radius-sm); font-family: var(--font-reading); font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; }
+        .tag-diff-col h4 { font-family: var(--font-body); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: var(--space-sm); }
+
+        /* Flag modal */
+        .flag-option { display: inline-block; padding: 6px 14px; border-radius: 20px; border: var(--border); background: var(--bg-elevated); cursor: pointer; font-size: 0.85rem; color: var(--text-secondary); margin: 3px; }
+        .flag-option:hover,.flag-option.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+        /* Thin horizontal scrollbar for Scan Words context cell */
+        .word-context {
+            scrollbar-width: thin; /* Firefox */
+            scrollbar-color: rgba(0,0,0,0.18) transparent;
+        }
+        .word-context::-webkit-scrollbar {
+            height: 6px;
+        }
+        .word-context::-webkit-scrollbar-thumb {
+            background: rgba(0,0,0,0.18);
+            border-radius: 3px;
+        }
+        .word-context::-webkit-scrollbar-track {
+            background: transparent;
+        }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+    <header class="app-header">
+        <a href="/" class="logo">Audiobook <span>Studio</span></a>
+        <div class="flex items-center gap-md">
+            <span id="project-title" class="text-muted"></span>
+            <a href="/" class="btn btn-ghost btn-small">← Projects</a>
+            <button class="btn btn-ghost btn-small" onclick="openSettings()">⚙ Settings</button>
+        </div>
+    </header>
+    <div class="app-body">
+        <nav class="sidebar" id="main-sidebar">
+            <p class="text-faint" style="font-size:0.75rem;margin-bottom:var(--space-md);text-transform:uppercase;letter-spacing:0.08em;">Pipeline Steps</p>
+            <ul class="step-nav" id="step-nav">
+                <li data-step="upload" onclick="goStep('upload')"><span class="step-dot"></span>Upload Manuscript</li>
+                <li data-step="range" onclick="goStep('range')"><span class="step-dot"></span>Select Range</li>
+                <li data-step="symbols" onclick="goStep('symbols')"><span class="step-dot"></span>Review Symbols</li>
+                <li data-step="clean_chunk" onclick="goStep('clean_chunk')"><span class="step-dot"></span>Clean & Chunk</li>
+                <li data-step="words" onclick="goStep('words')"><span class="step-dot"></span>Scan Words</li>
+                <li data-step="pronunciation" onclick="goStep('pronunciation')"><span class="step-dot"></span>Pronunciation</li>
+                <li data-step="tagging" onclick="goStep('tagging')"><span class="step-dot"></span>Emotion Tags</li>
+                <li data-step="generate" onclick="goStep('generate')"><span class="step-dot"></span>Generate Audio</li>
+                <li data-step="qa" onclick="goStep('qa')"><span class="step-dot"></span>QA Check</li>
+                <li data-step="review" onclick="goStep('review')"><span class="step-dot"></span>Review & Fix</li>
+                <li data-step="export" onclick="goStep('export')"><span class="step-dot"></span>Export</li>
+            </ul>
+        </nav>
+        <div class="main-content" id="main-content">
+            <section class="step-section" id="step-upload"><div class="center-content"><h2>Upload Manuscript</h2><p class="text-muted mt-sm mb-lg">Upload your .docx manuscript file.</p><div class="card" style="text-align:center;padding:var(--space-2xl);"><div id="upload-area" style="cursor:pointer" ondragover="event.preventDefault()" ondrop="handleDrop(event)" onclick="document.getElementById('file-input').click()"><p style="font-size:1.1rem;color:var(--text-secondary);">Drop your manuscript here or click to browse</p><p class="text-faint mt-sm" style="font-size:0.85rem;">Supports .docx files</p></div><input type="file" id="file-input" accept=".docx" style="display:none" onchange="uploadFile(this.files[0])"><div id="upload-status" class="mt-md"></div></div></div></section>
+
+            <section class="step-section" id="step-range"><div class="center-content"><h2>Select Manuscript Range</h2><p class="text-muted mt-sm mb-lg">Choose where the narrated text starts and ends.</p><div class="flex gap-md mb-md"><div style="flex:1"><label class="text-faint" style="font-size:0.8rem;">Start</label><div id="range-start-label" class="mono" style="color:var(--accent);">—</div></div><div style="flex:1"><label class="text-faint" style="font-size:0.8rem;">End</label><div id="range-end-label" class="mono" style="color:var(--accent);">—</div></div></div><div class="card" style="padding:0;"><ul class="heading-list" id="heading-list"></ul></div><div class="mt-md flex justify-between"><p class="text-faint" style="font-size:0.8rem;">Click to set start, click again to set end.</p><button class="btn btn-primary" id="extract-btn" onclick="extractChapters()" disabled>Extract Chapters</button></div></div></section>
+
+            <section class="step-section" id="step-symbols"><div class="center-content"><h2>Review Symbols</h2><p class="text-muted mt-sm mb-lg">Mark which symbols are scene breaks.</p><div class="card" style="padding:0;" id="symbol-list"></div><div class="mt-md flex justify-between"><button class="btn btn-secondary" onclick="goStep('clean_chunk')">Skip</button><button class="btn btn-primary" onclick="saveSymbols()">Confirm & Continue</button></div></div></section>
+
+            <section class="step-section" id="step-clean_chunk"><div class="center-content"><h2>Clean & Chunk Text</h2><p class="text-muted mt-sm mb-lg">Normalize text and split into TTS-friendly chunks.</p><div class="card"><div class="form-group"><label>Max words per chunk</label><input type="number" id="max-words" value="150" min="50" max="500"></div><div class="form-group"><label>Min words per chunk</label><input type="number" id="min-words" value="30" min="10" max="100"></div><button class="btn btn-primary mt-md" onclick="cleanAndChunk()">Clean & Chunk</button><div id="chunk-status" class="mt-md"></div></div></div></section>
+
+            <section class="step-section" id="step-words"><div class="center-content"><h2>Non-Standard Words</h2><p class="text-muted mt-sm mb-lg">Words not in the English dictionary.</p><div id="word-scan-status" class="mb-md"></div><div class="card" style="padding:0;max-height:55vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>Word</th><th>Count</th><th>Context</th><th></th></tr></thead><tbody id="word-tbody"></tbody></table></div><div class="mt-lg"><h3>Add Standard Word Override</h3><p class="text-muted mt-sm mb-md" style="font-size:0.85rem;">Force a standard word to be pronounced differently.</p><div class="flex gap-sm"><input type="text" id="std-word" placeholder="Word" style="max-width:180px;"><input type="text" id="std-phonetic" placeholder="Pronunciation" style="max-width:180px;"><button class="btn btn-secondary" onclick="addStdOverride()">Add</button></div></div><div class="mt-lg flex justify-between"><div></div><button class="btn btn-primary" onclick="goStep('pronunciation')">Continue →</button></div></div></section>
+
+            <section class="step-section" id="step-pronunciation"><div class="center-content"><h2>Pronunciation Testing</h2><p class="text-muted mt-sm mb-lg">Listen to each word in context, adjust spelling until it sounds right.</p><div id="pron-summary" class="mb-md"></div><div id="pron-progress" class="mb-md"></div><div id="pron-card-area"></div><div class="mt-md"><button class="btn btn-ghost btn-small" onclick="togglePronDict()">📖 View / Edit Full Dictionary</button></div><div id="pron-dict-view" class="hidden mt-md"></div><div class="mt-lg flex justify-between"><button class="btn btn-secondary" onclick="skipAllPron()">Skip Remaining</button><button class="btn btn-primary" onclick="goStep('tagging')">Continue →</button></div></div></section>
+
+            <section class="step-section" id="step-tagging"><div class="center-content"><h2>Emotion Tags</h2><p class="text-muted mt-sm mb-lg">Insert expression tags via LLM.</p><div id="tagging-content"></div></div></section>
+
+            <section class="step-section" id="step-generate"><div class="center-content"><h2>Generate Audio</h2><p class="text-muted mt-sm mb-lg">Generate TTS audio for all chunks.</p><div class="card"><div class="form-group"><label>Voice</label><select id="gen-voice"></select></div><div class="form-group"><label>Max retries</label><input type="number" id="gen-retries" value="3" min="1" max="10"></div><div class="flex gap-sm" style="margin-top:8px;margin-bottom:8px;"><button class="btn btn-primary" id="gen-start-btn" onclick="startGen()">Start</button><button class="btn btn-ghost" id="gen-pause-btn" onclick="pauseGen('generate')">Pause</button><button class="btn btn-ghost" id="gen-resume-btn" onclick="resumeGen('generate')">Continue</button><button class="btn btn-ghost" id="gen-stop-btn" onclick="stopGen('generate')">Stop</button></div><div style="border-top:var(--border);padding-top:10px;margin-top:8px;"><h4 style="margin:6px 0 8px 0">Quick Test</h4><div class="form-group"><label>Sample size</label><input type="number" id="gen-test-sample" value="5" min="1" max="200"></div><div class="form-group"><label>Max cycles</label><input type="number" id="gen-test-cycles" value="3" min="1" max="10"></div><div class="flex gap-sm"><button class="btn btn-secondary" onclick="startGenTest()">Run Test</button><div id="gen-test-progress" style="margin-left:8px"></div></div></div><div id="gen-progress" class="mt-md"></div></div></div></section>
+
+            <section class="step-section" id="step-qa"><div class="center-content"><h2>Quality Check</h2><p class="text-muted mt-sm mb-lg">This step transcribes generated audio and computes a word-level similarity score against the original text. Chunks scoring below the threshold are marked as failures for review; adjust the threshold to control strictness.</p><div class="card"><div class="form-group"><label>Similarity threshold</label><input type="number" id="qa-threshold" value="0.85" min="0.5" max="1.0" step="0.05"></div><button class="btn btn-primary" onclick="startQA()">Run QA</button><div id="qa-progress" class="mt-md"></div></div></div></section>
+
+            <section class="step-section" id="step-review">
+                <div class="review-layout">
+                    <div class="review-nav">
+                        <div class="review-nav-header">
+                            <div class="flex items-center justify-between mb-sm">
+                                <select id="review-step-jump" onchange="goStep(this.value)" style="background:var(--bg-elevated);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:4px 8px;border-radius:var(--radius-sm);cursor:pointer;">
+                                    <option value="upload">Upload</option><option value="range">Range</option><option value="symbols">Symbols</option>
+                                    <option value="clean_chunk">Clean</option><option value="words">Words</option><option value="pronunciation">Pronunciation</option>
+                                    <option value="tagging">Tags</option><option value="generate">Generate</option><option value="qa">QA</option>
+                                    <option value="review" selected>Review</option><option value="export">Export</option>
+                                </select>
+                                <span id="review-stats" class="text-faint" style="font-size:0.72rem;"></span>
+                            </div>
+                            <span style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);">Chapters</span>
+                        </div>
+                        <div id="chapter-nav-list"></div>
+                    </div>
+                    <div class="review-toolbar">
+                        <div class="transport-bar">
+                            <button class="t-btn" onclick="player?.jumpToPrevScene()" title="Prev scene [">⏮</button>
+                            <button class="t-btn" onclick="player?.prev()" title="Prev chunk ←">⏪</button>
+                            <button class="t-btn play-main" id="transport-play" onclick="player?.togglePlay()" title="Space">▶</button>
+                            <button class="t-btn" onclick="player?.next()" title="Next chunk →">⏩</button>
+                            <button class="t-btn" onclick="player?.jumpToNextScene()" title="Next scene ]">⏭</button>
+                            <div class="t-seek" id="transport-seek"><div class="t-fill" id="transport-fill"></div></div>
+                            <span class="t-time" id="transport-time">0:00</span>
+                            <span class="t-chunk-id" id="transport-chunk-id">—</span>
+                        </div>
+                        <div class="flex gap-sm" style="margin-left:auto;">
+                            <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+                            <button class="filter-btn" onclick="setFilter('flagged',this)">Flagged</button>
+                            <button class="filter-btn" onclick="setFilter('qa_fail',this)">QA Fail</button>
+                            <button class="filter-btn" onclick="setFilter('no_audio',this)">No Audio</button>
+                        </div>
+                    </div>
+                    <div class="review-body"><div class="review-text-panel" id="review-text-panel"></div></div>
+                </div>
+            </section>
+
+            <section class="step-section" id="step-export"><div class="center-content"><h2>Export</h2><p class="text-muted mt-sm mb-lg">Merge and export the final audiobook.</p><div class="card"><div class="form-group"><label>Scope</label><select id="export-scope"><option value="full">Full book</option><option value="chapter">Per chapter</option></select></div><button class="btn btn-primary" onclick="doExport()">Export</button><div id="export-status" class="mt-md"></div></div></div></section>
+        </div>
+    </div>
+</div>
+
+<!-- Flag Modal -->
+<div class="modal-overlay" id="flag-modal"><div class="modal"><h2>Flag Issue</h2><p class="text-muted mb-md" id="flag-chunk-label"></p><div id="flag-options" class="mb-md"></div><div class="form-group"><label>Notes</label><textarea id="flag-notes" rows="2"></textarea></div><div class="form-group"><label>Word range (e.g. "12-15")</label><input type="text" id="flag-range"></div><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('flag-modal')">Cancel</button><button class="btn btn-primary" onclick="submitFlag()">Flag</button></div></div></div>
+
+<!-- Override Modal -->
+<div class="modal-overlay" id="override-modal"><div class="modal"><h2>Location Pronunciation Override</h2><p class="text-muted mb-md">Override pronunciation for a word in this specific chunk only.</p><div class="form-group"><label>Word</label><input type="text" id="ov-word"></div><div class="form-group"><label>Pronunciation</label><input type="text" id="ov-phonetic"></div><input type="hidden" id="ov-chunk-id"><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('override-modal')">Cancel</button><button class="btn btn-primary" onclick="submitOverride()">Save</button></div></div></div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal"><div class="modal"><h2>Settings</h2><p class="text-muted mb-md">Edit application settings (JSON). Changes will be applied when saved.</p><textarea id="settings-json" rows="12" style="width:100%;font-family:var(--font-mono);font-size:0.85rem;padding:8px;box-sizing:border-box;"></textarea><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('settings-modal')">Cancel</button><button class="btn btn-primary" onclick="saveSettings()">Save</button></div></div></div>
+
+<!-- Debug banner and global error handlers (helps capture parse/runtime errors) -->
+<div id="debug-banner" style="display:none;position:fixed;top:0;left:0;right:0;background:#ffdddd;color:#900;padding:8px;z-index:9999;font-family:var(--font-mono);font-size:0.9rem;">JS errors will appear here.</div>
+<script>
+window.addEventListener('error', function(e){
+    try{
+        var b = document.getElementById('debug-banner');
+        if(b){ b.style.display='block'; b.textContent = 'JS Error: ' + (e.message || (e.error && e.error.message) || (e.filename? e.filename+":"+e.lineno : 'unknown')); }
+    }catch(_){ }
+    console.error('Captured JS error', e);
+});
+window.addEventListener('unhandledrejection', function(ev){
+    try{
+        var b = document.getElementById('debug-banner');
+        var msg = (ev.reason && ev.reason.message) ? ev.reason.message : String(ev.reason);
+        if(b){ b.style.display='block'; b.textContent = 'Unhandled Rejection: ' + msg; }
+    }catch(_){ }
+    console.error('UnhandledRejection', ev);
+});
+console.log('Debug banner installed');
+</script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/player.js"></script>
+<script>
+const P = new URLSearchParams(window.location.search);
+const SLUG = P.get('project');
+if (!SLUG) window.location.href = '/';
+let projectInfo, currentStep='upload', player=null, rvFilter='all', rvChapter=null;
+// Shared controller and pending map for pronunciation card audio
+let pronPlayerController = null;
+let pronPendingRequests = new Map();
+// Map of active poll timers for pronunciation cards (entryId -> timeoutId)
+let pronCardPollers = new Map();
+
+// Small helpers for highlighting the tested word in the Scan Words table
+function escapeHtml(text){
+    if(!text) return '';
+    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function highlightWordInContext(ctx, word){
+    if(!ctx) return '';
+    const esc = escapeHtml(ctx);
+    if(!word) return esc;
+    try{
+        const safe = word.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+        const re = new RegExp('\\b'+safe+'\\b','i');
+        return esc.replace(re, m => '<strong>'+m+'</strong>');
+    }catch(e){
+        return esc;
+    }
+}
+
+async function init(){
+    try{
+        projectInfo=await API.get(`/api/projects/${SLUG}`);
+        document.getElementById('project-title').textContent=projectInfo.name;
+        document.title=`${projectInfo.name} — Audiobook Studio`;
+        const map={'new':'upload','source_selected':'range','extracted':'symbols','symbols_reviewed':'clean_chunk','cleaned':'clean_chunk','chunked':'words','words_scanned':'words','pron_built':'pronunciation','pron_tested':'tagging','tagged':'generate','test_generated':'generate','generated':'qa','qa_done':'review','reviewed':'export'};
+        goStep(map[projectInfo.current_step]||'upload');
+    }catch(e){showToast(e.message,'error');}
+}
+function goStep(s){
+    currentStep=s;
+    document.querySelectorAll('.step-nav li').forEach(l=>l.classList.toggle('active',l.dataset.step===s));
+    document.querySelectorAll('.step-section').forEach(x=>x.classList.remove('active'));
+    document.getElementById('step-'+s)?.classList.add('active');
+    document.getElementById('main-sidebar').style.display=s==='review'?'none':'';
+    loadStep(s);
+}
+async function loadStep(s){try{switch(s){
+    case 'range':await loadHeadings();break;case 'symbols':await loadSymbols();break;
+    case 'words':await loadWords();break;case 'pronunciation':await loadPron();break;
+    case 'tagging':await loadTagging();break;case 'generate':await loadVoices();break;
+    case 'review':await loadReview();break;
+}}catch(e){showToast(e.message,'error');}}
+
+/* ═══ Upload ═══ */
+function handleDrop(e){e.preventDefault();uploadFile(e.dataTransfer.files[0]);}
+async function uploadFile(f){if(!f)return;const s=document.getElementById('upload-status');s.innerHTML='<span class="text-muted">Uploading...</span>';try{await API.upload(`/api/projects/${SLUG}/upload`,f);s.innerHTML=`<span class="badge badge-success">${f.name}</span>`;showToast('Uploaded','success');setTimeout(()=>goStep('range'),600);}catch(e){s.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}}
+
+/* ═══ Range ═══ */
+let headings=[],rS=null,rE=null;
+async function loadHeadings(){headings=await API.get(`/api/pipeline/${SLUG}/headings`);renderH();}
+function renderH(){const l=document.getElementById('heading-list');l.innerHTML='';for(const h of headings){l.appendChild(el('li',{class:'heading-item'+((rS!==null&&(rE===null?h.index===rS:h.index>=rS&&h.index<=rE))?' selected':''),onClick:()=>selH(h.index)},el('span',{class:'h-idx'},`#${h.index}`),el('span',{style:'font-weight:500'},h.title),el('span',{class:'h-preview'},h.preview||'')));}}
+function selH(i){if(rS===null)rS=i;else if(rE===null){if(i<rS){rE=rS;rS=i;}else rE=i;}else{rS=i;rE=null;}document.getElementById('range-start-label').textContent=rS!==null?headings[rS]?.title:'—';document.getElementById('range-end-label').textContent=rE!==null?headings[rE]?.title:'—';document.getElementById('extract-btn').disabled=rS===null;renderH();}
+async function extractChapters(){try{const r=await API.post(`/api/pipeline/${SLUG}/extract`,{start_chapter_idx:rS,end_chapter_idx:rE??rS});showToast(`${r.chapters} chapters`,'success');goStep('symbols');}catch(e){showToast(e.message,'error');}}
+
+/* ═══ Symbols ═══ */
+let symbols=[];
+async function loadSymbols(){symbols=await API.get(`/api/pipeline/${SLUG}/symbols`);const c=document.getElementById('symbol-list');c.innerHTML='';if(!symbols.length){c.innerHTML='<div class="p-md text-muted">No non-standard symbols found.</div>';return;}for(const s of symbols){const cb=document.createElement('input');cb.type='checkbox';cb.dataset.id=s.id;cb.className='sb-check';if(s.is_scene_break)cb.checked=true;c.appendChild(el('div',{class:'symbol-item'},el('span',{class:'symbol-char'},s.symbol),el('div',{style:'flex:1'},el('div',{class:'text-muted',style:'font-size:0.85rem'},s.context_preview||'')),el('label',{class:'flex items-center gap-sm',style:'cursor:pointer'},cb,el('span',{style:'font-size:0.85rem'},'Scene break'))));}}
+async function saveSymbols(){const d=[];document.querySelectorAll('.sb-check').forEach(cb=>d.push({symbol_id:+cb.dataset.id,is_scene_break:cb.checked}));await API.post(`/api/pipeline/${SLUG}/symbols`,d);showToast('Saved','success');goStep('clean_chunk');}
+
+/* ═══ Clean & Chunk ═══ */
+async function cleanAndChunk(){const s=document.getElementById('chunk-status');s.innerHTML='<span class="text-muted">Working...</span>';try{await API.post(`/api/pipeline/${SLUG}/clean`);const r=await API.post(`/api/pipeline/${SLUG}/chunk?max_words=${document.getElementById('max-words').value}&min_words=${document.getElementById('min-words').value}`);s.innerHTML=`<span class="badge badge-success">${r.chunks_created} chunks</span>`;setTimeout(()=>goStep('words'),600);}catch(e){s.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}}
+
+/* ═══ Words ═══ */
+async function loadWords(){
+    const s = document.getElementById('word-scan-status');
+    s.innerHTML = '<span class="text-muted">Scanning...</span>';
+    const w = await API.get(`/api/pipeline/${SLUG}/words`);
+    s.innerHTML = `<span class="badge badge-info">${w.length} words</span> <button class="btn btn-ghost btn-small" onclick="rescanWords()" style="margin-left:8px;">↻ Rescan</button>`;
+    const tb = document.getElementById('word-tbody');
+    tb.innerHTML = '';
+    for (const x of w.slice(0,250)) {
+    const ctxTd = el('td',{class:'word-context', style:'font-size:0.82rem;color:var(--text-secondary);max-width:650px;overflow-x:auto;white-space:nowrap;'});
+        ctxTd.innerHTML = highlightWordInContext(x.example_context||'', x.word);
+        const row = el('tr',{id:`word-row-${x.id}`},
+            el('td',{},el('span',{class:'mono'},x.word)),
+            el('td',{class:'text-muted'},String(x.frequency||'')),
+            ctxTd,
+            el('td',{},el('button',{class:'btn btn-ghost btn-small',onClick:()=>openPronEntry(x.id),title:'Open pronunciation test'},'Open'),el('button',{class:'btn btn-ghost btn-small',onClick:()=>removeWord(x.id),title:'Mark as standard / remove'},'✕'))
+        );
+        tb.appendChild(row);
+    }
+}
+
+async function rescanWords(){
+    if(!confirm('Rescan will clear pending/skipped entries and re-detect. Approved entries are kept. Continue?')) return;
+    const s = document.getElementById('word-scan-status');
+    s.innerHTML = '<span class="text-muted">Rescanning...</span>';
+    try{
+        const w = await API.post(`/api/pipeline/${SLUG}/words/rescan`);
+        s.innerHTML = `<span class="badge badge-success">${w.length} words found</span>`;
+        const tb = document.getElementById('word-tbody');
+        tb.innerHTML = '';
+        for (const x of w.slice(0,250)) {
+            const ctxTd = el('td',{class:'word-context', style:'font-size:0.82rem;color:var(--text-secondary);max-width:650px;overflow-x:auto;white-space:nowrap;'});
+            ctxTd.innerHTML = highlightWordInContext(x.example_context||'', x.word);
+            const row = el('tr',{id:`word-row-${x.id}`},
+                el('td',{},el('span',{class:'mono'},x.word)),
+                el('td',{class:'text-muted'},String(x.frequency||'')),
+                ctxTd,
+                el('td',{},el('button',{class:'btn btn-ghost btn-small',onClick:()=>openPronEntry(x.id),title:'Open pronunciation test'},'Open'),el('button',{class:'btn btn-ghost btn-small',onClick:()=>removeWord(x.id),title:'Remove'},'✕'))
+            );
+            tb.appendChild(row);
+        }
+    }catch(e){ s.innerHTML = `<span class="badge badge-error">${e.message}</span>`; }
+}
+async function addStdOverride(){const w=document.getElementById('std-word').value.trim(),p=document.getElementById('std-phonetic').value.trim();if(!w||!p){showToast('Fill both','error');return;}await API.post(`/api/pipeline/${SLUG}/pron/standard-override?word=${encodeURIComponent(w)}&phonetic=${encodeURIComponent(p)}`);showToast(`${w}→${p}`,'success');document.getElementById('std-word').value='';document.getElementById('std-phonetic').value='';}
+async function removeWord(entryId){try{await API.del(`/api/pipeline/${SLUG}/pron/${entryId}`);document.getElementById(`word-row-${entryId}`)?.remove();showToast('Removed','success');}catch(e){showToast(e.message,'error');}}
+
+// Open the Pronunciation test card for a specific word entry
+async function openPronEntry(entryId){
+    try{
+        goStep('pronunciation');
+        // Load all pron entries and focus the requested one
+        pronE = await API.get(`/api/pipeline/${SLUG}/pron`);
+        const idx = pronE.findIndex(e=>e.id===entryId);
+        if(idx>=0){ pronI = idx; }
+        else { showToast('Entry not found','error'); return; }
+        updPronProg(); loadPronSummary(); renderPronCard(pronE[pronI]);
+        try{ if(pronE.length && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);}catch(_){ }
+    }catch(e){ showToast(e.message,'error'); }
+}
+
+/* ═══ Pronunciation ═══ */
+let pronE=[],pronI=0;
+async function loadPron(){
+    // Load all pronunciation entries but start at the first pending one
+    pronE = await API.get(`/api/pipeline/${SLUG}/pron`);
+    let firstPending = pronE.findIndex(e=>e.status==='pending');
+    pronI = firstPending >= 0 ? firstPending : 0;
+    updPronProg();
+    loadPronSummary();
+    if(pronE.length) renderPronCard(pronE[pronI]);
+    else document.getElementById('pron-card-area').innerHTML = '<div class="card text-muted">All entries reviewed.</div>';
+    try{ if(pronE.length && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`); }catch(_){ }
+}
+function updPronProg(){const t=pronE.length;document.getElementById('pron-progress').innerHTML=t?`<div class="flex justify-between text-muted mb-sm" style="font-size:0.85rem"><span>${pronI+1}/${t}</span><span>${Math.round(pronI/t*100)}%</span></div>`+renderProgressBar(pronI,t).outerHTML:'';}
+async function renderPronCard(e){
+    const a=document.getElementById('pron-card-area');
+    a.innerHTML='';
+    // Clear any existing poller for this entry (avoid duplicate timers)
+    try{ if(pronCardPollers.has(e.id)){ clearTimeout(pronCardPollers.get(e.id)); pronCardPollers.delete(e.id); } }catch(_){ }
+    const w=e.word||'';
+    const ctx=e.example_context||'';
+    const hl=ctx.replace(new RegExp(`\\b${w}\\b`,'gi'),`<mark>${w}</mark>`);
+    let sugs=[];
+    try{ sugs=await API.get(`/api/pipeline/${SLUG}/pron/${e.id}/suggestions`); }catch(_){ }
+
+    const card=el('div',{class:'card',style:'padding:var(--space-lg)'},
+        el('div',{class:'flex justify-between items-center'},
+            el('div',{},el('span',{style:'font-family:var(--font-reading);font-size:1.4rem'},w),el('span',{class:'badge badge-info',style:'margin-left:12px'},`${e.frequency}×`)),
+            el('div',{class:'flex gap-sm'},
+                el('button',{class:'btn btn-ghost btn-small',onClick:()=>pronPrev()},'◀ Prev'),
+                el('button',{class:'btn btn-ghost btn-small',onClick:()=>pronNext()},'Next ▶'),
+                el('button',{class:'btn btn-ghost btn-small',onClick:()=>pronAct('skip')},'Skip'),
+                el('button',{class:'btn btn-secondary btn-small',onClick:()=>pronAct('ok')},'Sounds Fine')
+            )
+    ));
+
+    const cx=el('div',{class:'pron-context'});
+    cx.innerHTML=hl;
+    card.appendChild(cx);
+
+    // Buttons: Regenerate (uses buffer / API), Choose — original is shown as a variation below
+    const inputEl = el('input',{type:'text',id:'pron-input',value:e.phonetic||w,style:'max-width:240px;'});
+    const playBtn = el('button',{class:'btn btn-primary btn-small',onClick:(ev)=>testPr(e, ev.currentTarget)},'Generate');
+    const chooseBtn = el('button',{class:'btn btn-secondary btn-small',onClick:()=>choosePr(e)},'✓ Choose');
+    card.appendChild(el('div',{class:'flex gap-sm items-center mt-md'},inputEl, playBtn, chooseBtn));
+
+    if(sugs.length){
+        card.appendChild(el('div',{class:'text-faint mt-sm',style:'font-size:0.78rem'},'Click to apply:'));
+        const r=el('div',{class:'chip-row mt-sm'});
+        for(const s of sugs) r.appendChild(el('span',{class:'chip',title:s.rule,onClick:()=>{document.getElementById('pron-input').value=(document.getElementById('pron-input').value||w).replace(s.original_segment,s.suggested_replacement);}},`${s.original_segment}→${s.suggested_replacement}`));
+        card.appendChild(r);
+    }
+
+    const pl=renderAudioPlayer();
+    pl.style.marginTop='var(--space-md)';
+    pl.id='pron-player';
+    card.appendChild(pl);
+
+    // Ensure a single controller for this card and create it now so
+    // subsequent UI (previous attempts) can load into it immediately.
+    try{ pronPlayerController?.destroy(); }catch(_){ }
+    pronPlayerController = new AudioPlayerController(pl);
+
+    // `displayAtts` may be referenced outside the try-block below (polling),
+    // so declare it in the outer scope to avoid "not defined" errors.
+    let displayAtts = [];
+
+    try{
+        const atts=await API.get(`/api/pipeline/${SLUG}/pron/${e.id}/attempts`);
+        displayAtts = atts || [];
+
+        // If DB has no attempts, probe for existing files on disk and expose them as chips
+        if((!displayAtts || displayAtts.length===0)){
+            const found = [];
+            const prefillUrl = `/api/audio/${SLUG}/test_clips/pron_${e.id}_prefill.wav`;
+            try{ const h = await fetch(prefillUrl, {method:'HEAD'}); if(h.ok) found.push({id:'prefill',phonetic_used:e.phonetic||e.word,audio_url:prefillUrl,chosen:false}); }catch(_){ }
+            const origUrl = `/api/audio/${SLUG}/test_clips/pron_${e.id}_original.wav`;
+            try{ const h = await fetch(origUrl, {method:'HEAD'}); if(h.ok) found.push({id:'orig',phonetic_used:e.phonetic||e.word,audio_url:origUrl,chosen:false}); }catch(_){ }
+            for(let i=1;i<=5;i++){
+                const url = `/api/audio/${SLUG}/test_clips/pron_${e.id}_v${String(i).padStart(2,'0')}.wav`;
+                try{ const h = await fetch(url, {method:'HEAD'}); if(h.ok) found.push({id:`v${i}`,phonetic_used:`v${String(i).padStart(2,'0')}`,audio_url:url,chosen:false}); }catch(_){ }
+            }
+            if(found.length) displayAtts = found;
+        } else {
+            // Also probe and append any on-disk files that DB may have missed
+            const extra = [];
+            const prefillUrl = `/api/audio/${SLUG}/test_clips/pron_${e.id}_prefill.wav`;
+            try{ const h = await fetch(prefillUrl, {method:'HEAD'}); if(h.ok && !displayAtts.find(a=>a.audio_url===prefillUrl)) extra.push({id:'prefill',phonetic_used:e.phonetic||e.word,audio_url:prefillUrl,chosen:false}); }catch(_){ }
+            const origUrl = `/api/audio/${SLUG}/test_clips/pron_${e.id}_original.wav`;
+            try{ const h = await fetch(origUrl, {method:'HEAD'}); if(h.ok && !displayAtts.find(a=>a.audio_url===origUrl)) extra.push({id:'orig',phonetic_used:e.phonetic||e.word,audio_url:origUrl,chosen:false}); }catch(_){ }
+            for(let i=1;i<=5;i++){
+                const url = `/api/audio/${SLUG}/test_clips/pron_${e.id}_v${String(i).padStart(2,'0')}.wav`;
+                try{ const h = await fetch(url, {method:'HEAD'}); if(h.ok && !displayAtts.find(a=>a.audio_url===url)) extra.push({id:`v${i}`,phonetic_used:`v${String(i).padStart(2,'0')}`,audio_url:url,chosen:false}); }catch(_){ }
+            }
+            if(extra.length) displayAtts = displayAtts.concat(extra);
+        }
+
+        if(displayAtts.length){
+            card.appendChild(el('div',{class:'text-faint mt-md',style:'font-size:0.78rem'},'Variations:'));
+            const r=el('div',{class:'chip-row mt-sm'});
+
+            // Pick default variation: chosen one if present, otherwise last
+            let defaultAtt = displayAtts.find(a=>a.chosen) || displayAtts[displayAtts.length-1];
+
+            for(const a2 of displayAtts){
+                const chipBtn = el('span',{class:'chip'+(a2.id===defaultAtt.id? ' active':''),title:a2.phonetic_used||a2.id},a2.phonetic_used||a2.id);
+                chipBtn.addEventListener('click', ()=>{
+                    try{ document.getElementById('pron-input').value = a2.phonetic_used||''; }catch(_){ }
+                    // update active state
+                    r.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+                    chipBtn.classList.add('active');
+                    try{
+                        if(!pronPlayerController) pronPlayerController = new AudioPlayerController(document.getElementById('pron-player'));
+                        pronPlayerController.load(a2.audio_url);
+                        // reset play button to ready state (do not autoplay)
+                        pronPlayerController.playBtn.textContent = '▶';
+                    }catch(_){ console.warn('Failed to load variation audio', a2); }
+                });
+
+                const delBtn = el('button',{class:'btn btn-ghost btn-small',title:'Delete variation', onClick: async (ev)=>{ ev.stopPropagation(); if(!confirm('Delete this variation?')) return; try{ const aid = a2.id; if(aid===undefined||aid===null){ showToast('Cannot delete this variation','error'); return; } const isNumeric = (typeof aid==='number') || (/^[0-9]+$/.test(String(aid))); if(!isNumeric){ showToast('Only DB-tracked variations can be deleted from the UI','info'); return; } await API.del(`/api/pipeline/${SLUG}/pron/${e.id}/attempt/${encodeURIComponent(aid)}`); showToast('Deleted','success'); await renderPronCard(e); }catch(err){ showToast(err.message,'error'); } }}, '✕');
+
+                const wrapper = el('span',{style:'display:inline-flex;align-items:center;gap:6px'}, chipBtn, delBtn);
+                r.appendChild(wrapper);
+            }
+
+            // Load default variation into player (ready to play)
+            try{
+                if(!pronPlayerController) pronPlayerController = new AudioPlayerController(document.getElementById('pron-player'));
+                if(defaultAtt && defaultAtt.audio_url) pronPlayerController.load(defaultAtt.audio_url);
+            }catch(_){ }
+
+            card.appendChild(r);
+        }
+    }catch(_){ }
+
+    // If no variations found yet, poll briefly for a prefill or new attempt
+    if(!(displayAtts && displayAtts.length)){
+        try{
+            let tries = 0; const maxTries = 8;
+            const poll = async ()=>{
+                tries++;
+                try{
+                    const at2 = await API.get(`/api/pipeline/${SLUG}/pron/${e.id}/attempts`);
+                    if(at2 && at2.length){ await renderPronCard(e); return; }
+                    const prefillUrl = `/api/audio/${SLUG}/test_clips/pron_${e.id}_prefill.wav`;
+                    try{ const h = await fetch(prefillUrl, {method:'HEAD'}); if(h.ok){ await renderPronCard(e); return; } }catch(_){ }
+                }catch(_){ }
+                if(tries < maxTries){ const t = setTimeout(poll, 1000); pronCardPollers.set(e.id, t); }
+                else { pronCardPollers.delete(e.id); }
+            };
+            poll();
+        }catch(_){ }
+    }
+
+    a.appendChild(card);
+}
+async function playOrig(e, btn){
+    try{
+        // Prevent duplicate clicks
+        if(pronPendingRequests.get(e.id)){
+            showToast('Playback pending','info');
+            return;
+        }
+        btn.disabled = true;
+        // Prefer playing an existing original file if present
+        const origUrl = `/api/audio/${SLUG}/test_clips/pron_${e.id}_original.wav`;
+        let exists = false;
+        try{ const h = await fetch(origUrl, { method: 'HEAD' }); if(h.ok) exists = true; }catch(_){ exists = false; }
+
+        if(exists){
+            if(!pronPlayerController) pronPlayerController = new AudioPlayerController(document.getElementById('pron-player'));
+            pronPlayerController.load(origUrl);
+            await pronPlayerController.audio.play();
+            pronPlayerController.playBtn.textContent='⏸';
+        }else{
+            const r = await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/test-original`);
+            if(!pronPlayerController) pronPlayerController = new AudioPlayerController(document.getElementById('pron-player'));
+            pronPlayerController.load(r.audio_url);
+            await pronPlayerController.audio.play();
+            pronPlayerController.playBtn.textContent='⏸';
+        }
+    }catch(x){showToast(x.message,'error');}
+    finally{ try{btn.disabled = false;}catch(_){} }
+}
+
+async function testPr(e, btn){
+    const ph=document.getElementById('pron-input').value.trim();
+    if(!ph) return;
+    // Avoid multiple simultaneous generation requests for same entry
+    if(pronPendingRequests.get(e.id)){
+        showToast('Generation already pending','info');
+        return;
+    }
+    pronPendingRequests.set(e.id, true);
+    const origLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    try{
+        const r = await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/test`,{entry_id:e.id,phonetic:ph});
+        if(!pronPlayerController) pronPlayerController = new AudioPlayerController(document.getElementById('pron-player'));
+        pronPlayerController.load(r.audio_url);
+        await pronPlayerController.audio.play();
+        pronPlayerController.playBtn.textContent='⏸';
+        // Refresh the card to show the new attempt in the list of attempts
+        try{ await renderPronCard(e); }catch(_){ }
+    }catch(x){
+        showToast(x.message,'error');
+    }finally{
+        pronPendingRequests.delete(e.id);
+        btn.disabled = false;
+        btn.textContent = origLabel;
+    }
+}
+async function choosePr(e){const ph=document.getElementById('pron-input').value.trim();await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,phonetic:ph||null,status:'approved'});showToast(`${e.word}→${ph}`,'success');pronNext();}
+async function pronAct(a){const e=pronE[pronI];if(a==='skip')await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,status:'skipped'});else await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,phonetic:null,status:'approved'});pronNext();}
+function pronNext(){pronI++;updPronProg();loadPronSummary();if(pronI<pronE.length){renderPronCard(pronE[pronI]);try{API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);}catch(_){}}else document.getElementById('pron-card-area').innerHTML='<div class="card text-muted">All done!</div>';}
+function pronPrev(){
+    if(pronI<=0) return;
+    pronI--;
+    updPronProg();
+    loadPronSummary();
+    renderPronCard(pronE[pronI]);
+    try{ if(pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`); }catch(_){ }
+}
+async function skipAllPron(){await API.post(`/api/pipeline/${SLUG}/pron/skip-all`);showToast('Skipped','success');goStep('tagging');}
+
+async function loadPronSummary(){
+    try{
+        const all=await API.get(`/api/pipeline/${SLUG}/pron`);
+        const approved=all.filter(e=>e.status==='approved');
+        const skipped=all.filter(e=>e.status==='skipped');
+        const pending=all.filter(e=>e.status==='pending');
+        const withPhonetic=approved.filter(e=>e.phonetic);
+        document.getElementById('pron-summary').innerHTML=`<div class="card" style="padding:var(--space-md);display:flex;gap:var(--space-lg);flex-wrap:wrap;font-size:0.85rem;">
+            <span><strong>${all.length}</strong> total</span>
+            <span style="color:var(--success)">✓ ${approved.length} approved</span>
+            <span style="color:var(--text-muted)">⊘ ${skipped.length} skipped</span>
+            <span style="color:var(--accent)">${pending.length} pending</span>
+            <span style="color:var(--info)">${withPhonetic.length} with pronunciation override</span>
+        </div>`;
+    }catch(_){}
+}
+
+async function togglePronDict(){
+    const view=document.getElementById('pron-dict-view');
+    if(!view.classList.contains('hidden')){view.classList.add('hidden');return;}
+    view.classList.remove('hidden');
+    view.innerHTML='<span class="text-muted">Loading dictionary...</span>';
+    try{
+        const all=await API.get(`/api/pipeline/${SLUG}/pron`);
+        const tbl=document.createElement('table');tbl.className='data-table';
+        tbl.innerHTML='<thead><tr><th>Word</th><th>Pronunciation (click to edit)</th><th>Status</th><th>Frequency</th><th></th></tr></thead>';
+        const tb=document.createElement('tbody');tbl.appendChild(tb);
+        for(const e of all){
+            const tr=document.createElement('tr');tr.id=`pron-dict-row-${e.id}`;
+            const statusCls=e.status==='approved'?'badge-success':e.status==='skipped'?'badge-warning':'badge-info';
+            // Word
+            const td1=document.createElement('td');td1.className='mono';td1.textContent=e.word;tr.appendChild(td1);
+            // Phonetic (editable)
+            const td2=document.createElement('td');
+            const ph=document.createElement('input');ph.type='text';ph.value=e.phonetic||'';ph.placeholder='— (sounds fine as-is)';
+            ph.style.cssText='background:transparent;border:1px dashed var(--text-faint);padding:2px 6px;min-width:140px;color:var(--text-primary);font-family:var(--font-mono);font-size:0.85rem;';
+            ph.onblur=async()=>{
+                const newVal=ph.value.trim();
+                if(newVal===(e.phonetic||''))return;
+                try{
+                    await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,phonetic:newVal||null,status:'approved'});
+                    e.phonetic=newVal||null;
+                    showToast(`Saved: ${e.word}${newVal?' → '+newVal:' (no override)'}`,'success');
+                    loadPronSummary();
+                }catch(err){showToast(err.message,'error');ph.value=e.phonetic||'';}
+            };
+            ph.onkeydown=(ev)=>{if(ev.key==='Enter')ph.blur();if(ev.key==='Escape'){ph.value=e.phonetic||'';ph.blur();}};
+            td2.appendChild(ph);tr.appendChild(td2);
+            // Status
+            const td3=document.createElement('td');td3.innerHTML=`<span class="badge ${statusCls}">${e.status}</span>`;tr.appendChild(td3);
+            // Freq
+            const td4=document.createElement('td');td4.className='text-muted';td4.textContent=e.frequency+'×';tr.appendChild(td4);
+            // Remove
+            const td5=document.createElement('td');
+            const btn=document.createElement('button');btn.className='btn btn-ghost btn-small';btn.textContent='✕';btn.onclick=()=>removePronEntry(e.id);
+            td5.appendChild(btn);tr.appendChild(td5);
+            tb.appendChild(tr);
+        }
+        view.innerHTML='';view.appendChild(tbl);
+    }catch(e){view.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}
+}
+
+async function removePronEntry(entryId){
+    try{await API.del(`/api/pipeline/${SLUG}/pron/${entryId}`);document.getElementById(`pron-dict-row-${entryId}`)?.remove();showToast('Removed','success');loadPronSummary();}catch(e){showToast(e.message,'error');}
+}
+
+/* ═══ Tagging ═══ */
+async function loadTagging(){
+    const c=document.getElementById('tagging-content');c.innerHTML='';
+    try{
+        const tags=await API.get(`/api/pipeline/${SLUG}/tagging/available-tags`);
+        const pd=await API.get(`/api/pipeline/${SLUG}/tagging/default-prompt`);
+        if(!tags.length){c.innerHTML='<div class="card text-muted">No tags supported by current TTS. <button class="btn btn-primary mt-md" onclick="goStep(\'generate\')">Skip</button></div>';return;}
+        const tagChips=el('div',{class:'chip-row mb-md'});for(const t of tags)tagChips.appendChild(el('span',{class:'chip',title:t.example},t.tag+' '+t.description));
+        c.appendChild(el('div',{class:'card mb-md'},el('h3',{class:'mb-sm'},'Available Tags'),tagChips));
+        c.appendChild(el('div',{class:'card mb-md'},
+            el('h3',{class:'mb-sm'},'Tagging Prompt'),
+            el('textarea',{id:'tag-prompt',rows:'6',style:'font-family:var(--font-mono);font-size:0.82rem;',value:pd.prompt}),
+            el('div',{class:'tag-chat-box',id:'tag-chat'}),
+            el('div',{class:'flex gap-sm mt-md'},el('input',{type:'text',id:'tag-input',placeholder:'Ask LLM to adjust prompt...',style:'flex:1;',onKeydown:(e)=>{if(e.key==='Enter')tagChat();}}),el('button',{class:'btn btn-secondary',onClick:tagChat},'Send')),
+            el('div',{class:'flex gap-sm mt-md'},el('button',{class:'btn btn-secondary',onClick:testTag},'Test on Samples'),el('button',{class:'btn btn-primary',onClick:applyTag},'Apply to All'))));
+        document.getElementById('tag-prompt').value=pd.prompt;
+        c.appendChild(el('div',{id:'tag-results'}));
+    }catch(e){c.innerHTML=`<div class="card text-muted">${e.message} <button class="btn btn-primary mt-md" onclick="goStep('generate')">Skip</button></div>`;}
+}
+async function tagChat(){const inp=document.getElementById('tag-input'),msg=inp.value.trim();if(!msg)return;inp.value='';const box=document.getElementById('tag-chat');box.appendChild(el('div',{class:'tag-chat-msg user'},'You: '+msg));box.scrollTop=9999;try{const r=await API.post(`/api/pipeline/${SLUG}/tagging/chat`,{message:msg,system_prompt:document.getElementById('tag-prompt').value});document.getElementById('tag-prompt').value=r.updated_prompt;box.appendChild(el('div',{class:'tag-chat-msg system'},'Prompt updated. Review and test.'));box.scrollTop=9999;}catch(e){box.appendChild(el('div',{class:'tag-chat-msg system'},'Error: '+e.message));}}
+async function testTag(){const area=document.getElementById('tag-results');area.innerHTML='<span class="text-muted">Testing...</span>';try{const r=await API.post(`/api/pipeline/${SLUG}/tagging/test`,{system_prompt:document.getElementById('tag-prompt').value});area.innerHTML='';for(const x of r){area.appendChild(el('div',{class:'card mb-md'},el('div',{class:'mono text-faint',style:'font-size:0.75rem;margin-bottom:8px'},x.chunk_id),el('div',{class:'tag-diff'},el('div',{class:'tag-diff-col'},el('h4',{},'Original'),document.createTextNode(x.original)),el('div',{class:'tag-diff-col'},el('h4',{},'Tagged'),document.createTextNode(x.tagged)))));}}catch(e){area.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}}
+async function applyTag(){try{await API.post(`/api/pipeline/${SLUG}/tagging/apply`,{system_prompt:document.getElementById('tag-prompt').value});const area=document.getElementById('tag-results');await API.pollTask(SLUG,'tagging',d=>{area.innerHTML=d.status==='done'?'<span class="badge badge-success">Done</span>':`<span class="text-muted">${d.current||0}/${d.total||'?'}</span>`;});showToast('Tagged','success');}catch(e){showToast(e.message,'error');}}
+
+/* ═══ Generate ═══ */
+async function loadVoices(){
+    try{
+        const v = await API.get('/api/settings/tts/voices');
+        const s = document.getElementById('gen-voice');
+        s.innerHTML = '';
+        for(const x of v) s.appendChild(el('option',{value:x.id},`${x.name} — ${x.description}`));
+        // Use project-saved voice if available, otherwise app default
+        try{
+            const pvoice = projectInfo?.voice || '';
+            if(pvoice) s.value = pvoice;
+            else {
+                const st = await API.get('/api/settings');
+                s.value = st.engine.tts_config.default_voice || (s.options[0] && s.options[0].value) || '';
+            }
+        }catch(_){ }
+    }catch(_){ }
+}
+
+async function startGen(){
+    const p = document.getElementById('gen-progress');
+    const btn = document.getElementById('gen-start-btn');
+    btn.disabled = true;
+    const voice = document.getElementById('gen-voice').value;
+    try{
+        // reflect selection in UI immediately
+        projectInfo = projectInfo || {};
+        projectInfo.voice = voice;
+
+        await API.post(`/api/pipeline/${SLUG}/generate`,{voice: voice, max_retries:+document.getElementById('gen-retries').value});
+        await API.pollTask(SLUG,'generate', d => {
+            const pct = d.total ? Math.round(d.current/d.total*100) : 0;
+            p.innerHTML = `<div class="flex justify-between text-muted mb-sm" style="font-size:0.85rem"><span>${d.current||0}/${d.total||'?'}</span><span>${pct}%</span></div>` + renderProgressBar(d.current||0,d.total||1).outerHTML;
+            if(d.last_result) p.innerHTML += `<div class="text-faint mt-sm" style="font-size:0.85rem">Last: ${d.last_result.chunk_id || ''} ${d.last_result.status||''}</div>`;
+            if(d.status === 'done') p.innerHTML += `<div class="mt-md"><span class="badge badge-success">${d.ok||0} ok</span> <span class="badge badge-error">${d.errors||0} err</span></div>`;
+        });
+        showToast('Done','success');
+    }catch(e){
+        p.innerHTML = `<span class="badge badge-error">${e.message}</span>`;
+    }
+    btn.disabled = false;
+}
+
+async function pauseGen(taskName='generate'){
+    try{await API.post(`/api/pipeline/${SLUG}/task/${taskName}/pause`);showToast('Paused','info');}catch(e){showToast(e.message,'error');}
+}
+
+async function resumeGen(taskName='generate'){
+    try{await API.post(`/api/pipeline/${SLUG}/task/${taskName}/resume`);showToast('Resumed','success');}catch(e){showToast(e.message,'error');}
+}
+
+async function stopGen(taskName='generate'){
+    if(!confirm('Stop the task? This will request a graceful stop.')) return;
+    try{await API.post(`/api/pipeline/${SLUG}/task/${taskName}/stop`);showToast('Stop requested','info');}catch(e){showToast(e.message,'error');}
+}
+
+async function startGenTest(){
+    const p = document.getElementById('gen-test-progress');
+    p.innerHTML = '<span class="text-muted">Starting test...</span>';
+    const voice = document.getElementById('gen-voice').value;
+    const sample = +document.getElementById('gen-test-sample').value || 5;
+    const cycles = +document.getElementById('gen-test-cycles').value || 3;
+    try{
+        await API.post(`/api/pipeline/${SLUG}/generate_test`,{voice:voice,sample_size:sample,max_cycles:cycles});
+        await API.pollTask(SLUG,'generate_test', d => {
+            let html = '';
+            if(d.phase) html += `<div class="text-faint">Phase: ${d.phase} — cycle ${d.cycle||''}</div>`;
+            if(d.current !== undefined) html += `<div style="font-size:0.9rem">${d.current}/${d.total}</div>`;
+            if(d.passed !== undefined || d.failed !== undefined) html += `<div class="mt-sm"><span class="badge badge-success">${d.passed||0} pass</span> <span class="badge badge-error" style="margin-left:8px">${d.failed||0} fail</span></div>`;
+            if(d.status==='done'){
+                html += `<div class="mt-sm"><strong>Cycles:</strong></div>`;
+                for(const c of d.cycles||[]) html += `<div class="text-faint" style="font-size:0.9rem">Cycle ${c.cycle}: ${c.passed}/${c.total} pass</div>`;
+            }
+            p.innerHTML = html;
+        });
+        showToast('Test complete','success');
+    }catch(e){ p.innerHTML = `<span class="badge badge-error">${e.message}</span>`; }
+}
+
+/* ═══ QA ═══ */
+async function startQA(){
+    const p = document.getElementById('qa-progress');
+    try{
+        await API.post(`/api/pipeline/${SLUG}/qa`,{min_similarity:+document.getElementById('qa-threshold').value});
+        await API.pollTask(SLUG,'qa', d => {
+            const pct = d.total ? Math.round(d.current/d.total*100) : 0;
+            let html = `<div class="flex justify-between text-muted mb-sm" style="font-size:0.85rem"><span>${d.current||0}/${d.total||'?'}</span><span>${pct}%</span></div>` + renderProgressBar(d.current||0,d.total||1).outerHTML;
+            if(d.last_result) html += `<div class="text-faint mt-sm" style="font-size:0.85rem">Last: ${d.last_result.chunk_id||''} — ${d.last_result.qa_status||''} (${d.last_result.score||''})</div>`;
+            if(d.status === 'done') html += `<div class="mt-md"><span class="badge badge-success">${d.passed||0} pass</span> <span class="badge badge-error" style="margin-left:8px">${d.failed||0} fail</span></div>`;
+            p.innerHTML = html;
+        });
+        showToast('QA done','success');
+    }catch(e){ p.innerHTML = `<span class="badge badge-error">${e.message}</span>`; }
+}
+
+/* ═══ Review ═══ */
+async function loadReview(){
+    if(player)player.destroy();
+    player=new ContinuousPlayer({slug:SLUG,onChunkChange:(i,c)=>{
+        document.querySelectorAll('.review-chunk-block').forEach(b=>b.classList.remove('playing'));
+        const bl=document.querySelector(`.review-chunk-block[data-cid="${c.id}"]`);
+        if(bl){bl.classList.add('playing');bl.scrollIntoView({behavior:'smooth',block:'center'});}
+        document.getElementById('transport-chunk-id').textContent=c.id;
+    },onStateChange:(st)=>{
+        document.getElementById('transport-play').textContent=st==='playing'?'⏸':'▶';
+        document.getElementById('transport-fill').style.width=(player.progress*100)+'%';
+        const fmt=s=>`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,'0')}`;
+        document.getElementById('transport-time').textContent=player.duration?`${fmt(player.currentTime)}/${fmt(player.duration)}`:'0:00';
+    }});
+    await player.init();
+    // Chapter nav
+    const nav=document.getElementById('chapter-nav-list');nav.innerHTML='';
+    nav.appendChild(el('div',{class:'chapter-nav-item'+(rvChapter===null?' active':''),onClick:()=>{rvChapter=null;renderRvChunks();nav.querySelectorAll('.chapter-nav-item').forEach((x,i)=>x.classList.toggle('active',i===0));}},el('span',{},'All'),el('div',{class:'ch-stats'},el('span',{},`${player.chunks.length} chunks`))));
+    for(const ch of player.chapters){nav.appendChild(el('div',{class:'chapter-nav-item',onClick:(e)=>{rvChapter=ch.idx;renderRvChunks();nav.querySelectorAll('.chapter-nav-item').forEach(x=>x.classList.remove('active'));e.currentTarget.classList.add('active');}},el('span',{},ch.title||`Ch ${ch.idx}`),el('div',{class:'ch-stats'},el('span',{},`${ch.total_chunks}`),ch.flagged?el('span',{style:'color:var(--error)'},`${ch.flagged}⚑`):null)));}
+    document.getElementById('review-stats').textContent=`${player.playableChunks.length}/${player.chunks.length}`;
+    renderRvChunks();
+    document.getElementById('transport-seek').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();player.seek((e.clientX-r.left)/r.width);};
+}
+function renderRvChunks(){
+    const p=document.getElementById('review-text-panel');p.innerHTML='';
+    let chunks=player.getChunksByFilter(rvFilter);
+    if(rvChapter!==null){const pfx=`ch${String(rvChapter).padStart(3,'0')}`;chunks=chunks.filter(c=>c.id?.startsWith(pfx));}
+    if(!chunks.length){p.innerHTML='<p class="text-muted">No chunks match filter.</p>';return;}
+    for(const c of chunks){
+        const bl=el('div',{class:'review-chunk-block','data-cid':c.id,onClick:e=>{if(e.target.tagName!=='BUTTON')player.jumpToChunk(c.id);}});
+        bl.appendChild(el('span',{class:'chunk-id-label'},c.id));
+        const tx=el('div',{class:'reading-text',style:'padding-right:100px;'});tx.textContent=c.original_text||'';bl.appendChild(tx);
+        const row=el('div',{class:'flex items-center gap-sm mt-sm'});
+        if(c.has_audio){if(c.qa?.status==='pass')row.appendChild(el('span',{class:'badge badge-success'},'pass'));else if(c.qa?.status==='fail')row.appendChild(el('span',{class:'badge badge-error'},'fail'));else row.appendChild(el('span',{class:'badge badge-info'},'audio'));}else row.appendChild(el('span',{class:'badge badge-warning'},'pending'));
+        if(c.flags?.length)for(const f of c.flags)row.appendChild(el('span',{class:'badge badge-error'},f.flag_type));
+        row.appendChild(el('div',{style:'margin-left:auto;display:flex;gap:4px;'},el('button',{class:'btn btn-ghost btn-small',onClick:()=>openFlag(c.id)},'⚑'),el('button',{class:'btn btn-ghost btn-small',onClick:()=>openOv(c.id)},'✎'),c.has_audio?el('button',{class:'btn btn-ghost btn-small',onClick:()=>regenChunk(c.id)},'↻'):null));
+        bl.appendChild(row);p.appendChild(bl);
+        if(c.scene_break_after)p.appendChild(el('div',{class:'scene-break-marker'},'· · ·'));
+        if(c.chapter_break_after)p.appendChild(el('div',{class:'scene-break-marker',style:'font-size:1.2rem;padding:var(--space-lg) 0'},'— — —'));
+    }
+}
+function setFilter(f,btn){rvFilter=f;document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderRvChunks();}
+
+/* ═══ Flag ═══ */
+let flagCid=null,flagType=null;
+function openFlag(cid){flagCid=cid;flagType=null;document.getElementById('flag-chunk-label').textContent=cid;const o=document.getElementById('flag-options');o.innerHTML='';for(const t of['garbled','missing','repetition','added_words','pronunciation','other'])o.appendChild(el('span',{class:'flag-option',onClick:e=>{o.querySelectorAll('.flag-option').forEach(x=>x.classList.remove('selected'));e.target.classList.add('selected');flagType=t;}},t));document.getElementById('flag-notes').value='';document.getElementById('flag-range').value='';openModal('flag-modal');}
+async function submitFlag(){if(!flagType){showToast('Select type','error');return;}await API.post(`/api/audio/${SLUG}/review/flag`,{chunk_id:flagCid,flag_type:flagType,notes:document.getElementById('flag-notes').value,word_range:document.getElementById('flag-range').value||null});closeModal('flag-modal');showToast('Flagged','success');await player.init();renderRvChunks();}
+
+/* ═══ Override ═══ */
+function openOv(cid){document.getElementById('ov-chunk-id').value=cid;document.getElementById('ov-word').value='';document.getElementById('ov-phonetic').value='';openModal('override-modal');}
+async function submitOverride(){const w=document.getElementById('ov-word').value.trim(),ph=document.getElementById('ov-phonetic').value.trim(),cid=document.getElementById('ov-chunk-id').value;if(!w||!ph){showToast('Fill both','error');return;}await API.post(`/api/audio/${SLUG}/review/location-override`,{word:w,phonetic:ph,chunk_id:cid});closeModal('override-modal');showToast(`${w}→${ph}`,'success');}
+async function regenChunk(cid){try{await API.post(`/api/pipeline/${SLUG}/generate`,{chunk_ids:[cid],max_retries:3});showToast('Regenerating...','success');setTimeout(async()=>{await player.init();renderRvChunks();},5000);}catch(e){showToast(e.message,'error');}}
+
+/* ═══ Export ═══ */
+async function doExport(){const s=document.getElementById('export-status');s.innerHTML='<span class="text-muted">Exporting...</span>';try{const r=await API.post(`/api/pipeline/${SLUG}/export`,{scope:document.getElementById('export-scope').value});s.innerHTML=r.file?`<span class="badge badge-success">${r.file}</span>`:`<span class="badge badge-success">${r.files.length} files</span>`;showToast('Done','success');}catch(e){s.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}}
+
+/* ═══ Keyboard ═══ */
+document.addEventListener('keydown',e=>{if(currentStep!=='review'||e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;switch(e.code){case'Space':e.preventDefault();player?.togglePlay();break;case'ArrowRight':e.preventDefault();player?.next();break;case'ArrowLeft':e.preventDefault();player?.prev();break;case'BracketRight':e.preventDefault();player?.jumpToNextScene();break;case'BracketLeft':e.preventDefault();player?.jumpToPrevScene();break;}});
+
+/* ═══ Modal ═══ */
+function openModal(id){document.getElementById(id).classList.add('visible');}
+function closeModal(id){document.getElementById(id).classList.remove('visible');}
+document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('visible');}));
+
+async function openSettings(){
+    const modal = document.getElementById('settings-modal');
+    const ta = document.getElementById('settings-json');
+    ta.value = 'Loading...';
+    modal.classList.add('visible');
+    try{
+        const s = await API.get('/api/settings');
+        ta.value = JSON.stringify(s, null, 2);
+    }catch(e){
+        ta.value = 'Error loading settings: ' + e.message;
+    }
+}
+
+async function saveSettings(){
+    const ta = document.getElementById('settings-json');
+    try{
+        const parsed = JSON.parse(ta.value);
+        const payload = {};
+        if (parsed.engine) payload.engine = parsed.engine;
+        if (parsed.resource) payload.resource = parsed.resource;
+        if (parsed.audio) payload.audio = parsed.audio;
+        await API.post('/api/settings', payload);
+        showToast('Settings saved — reloading','success');
+        closeModal('settings-modal');
+        setTimeout(()=>location.reload(),600);
+    }catch(e){
+        showToast('Invalid JSON: ' + e.message,'error');
+    }
+}
+
+init();
+</script>
+</body>
+</html>

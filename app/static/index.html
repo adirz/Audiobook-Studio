@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Audiobook Studio</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="app-header">
+            <a href="/" class="logo">Audiobook <span>Studio</span></a>
+            <a href="#" class="btn btn-ghost" onclick="openSettings()">⚙ Settings</a>
+        </header>
+
+        <div class="main-content">
+            <div class="center-content">
+                <div style="margin-bottom: var(--space-xl);">
+                    <h1>Your Projects</h1>
+                    <p class="text-muted mt-sm">Each project is a manuscript being turned into an audiobook.</p>
+                </div>
+
+                <div class="project-grid" id="project-grid">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Project Modal -->
+    <div class="modal-overlay" id="new-project-modal">
+        <div class="modal">
+            <h2>New Project</h2>
+            <div class="form-group">
+                <label for="project-name">Project name</label>
+                <input type="text" id="project-name" placeholder="e.g. Alice in Wonderland">
+            </div>
+            <div class="form-group">
+                <label for="project-desc">Description (optional)</label>
+                <textarea id="project-desc" rows="2" placeholder="Notes about this audiobook project"></textarea>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('new-project-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createProject()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal" style="min-width: 520px;">
+            <h2>Settings</h2>
+            <div id="settings-content">Loading...</div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('settings-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        let projects = [];
+
+        async function loadProjects() {
+            try {
+                projects = await API.get('/api/projects/');
+                renderProjects();
+            } catch (err) {
+                showToast('Failed to load projects: ' + err.message, 'error');
+            }
+        }
+
+        function renderProjects() {
+            const grid = document.getElementById('project-grid');
+            grid.innerHTML = '';
+
+            // New project card
+            const newCard = el('div', {
+                class: 'card new-project-card',
+                onClick: () => openModal('new-project-modal'),
+            }, '+ New Project');
+            grid.appendChild(newCard);
+
+            for (const p of projects) {
+                const stepLabel = p.current_step.replace(/_/g, ' ');
+                const card = el('div', {
+                    class: 'card project-card',
+                    onClick: () => { window.location.href = `/workspace?project=${p.slug}`; },
+                },
+                    el('h3', {}, p.name),
+                    el('p', { class: 'text-muted mt-sm', style: { fontSize: '0.85rem' } },
+                        p.description || 'No description'),
+                    el('div', { class: 'flex justify-between items-center mt-md' },
+                        el('span', { class: 'badge badge-info' }, stepLabel),
+                        el('span', { class: 'text-faint', style: { fontSize: '0.78rem' } },
+                            p.chapter_count > 0
+                                ? `${p.chapter_count} chapters · ${p.chunk_count} chunks`
+                                : 'Not started'
+                        ),
+                    ),
+                );
+                grid.appendChild(card);
+            }
+        }
+
+        async function createProject() {
+            const name = document.getElementById('project-name').value.trim();
+            if (!name) { showToast('Please enter a project name', 'error'); return; }
+            const desc = document.getElementById('project-desc').value.trim();
+
+            try {
+                const proj = await API.post('/api/projects/', { name, description: desc });
+                closeModal('new-project-modal');
+                window.location.href = `/workspace?project=${proj.slug}`;
+            } catch (err) {
+                showToast('Failed to create project: ' + err.message, 'error');
+            }
+        }
+
+        /* ─── Settings ─────────────────────────────── */
+
+        async function openSettings() {
+            openModal('settings-modal');
+            try {
+                const [settings, engines] = await Promise.all([
+                    API.get('/api/settings/'),
+                    API.get('/api/settings/engines'),
+                ]);
+                renderSettingsForm(settings, engines);
+            } catch (err) {
+                document.getElementById('settings-content').textContent =
+                    'Failed to load settings: ' + err.message;
+            }
+        }
+
+        function renderSettingsForm(settings, engines) {
+            const container = document.getElementById('settings-content');
+            container.innerHTML = '';
+
+            // TTS Engine
+            container.appendChild(el('h3', { class: 'mb-md' }, 'TTS Engine'));
+            const ttsGroup = el('div', { class: 'form-group' });
+            ttsGroup.appendChild(el('label', {}, 'Engine'));
+            const ttsSelect = el('select', { id: 'set-tts-engine' });
+            for (const [key, eng] of Object.entries(engines.tts)) {
+                const opt = el('option', { value: key }, eng.name);
+                if (key === settings.engine.tts_engine) opt.selected = true;
+                ttsSelect.appendChild(opt);
+            }
+            ttsGroup.appendChild(ttsSelect);
+            container.appendChild(ttsGroup);
+
+            // TTS config fields
+            const ttsEngine = engines.tts[settings.engine.tts_engine];
+            if (ttsEngine) {
+                for (const [key, schema] of Object.entries(ttsEngine.config_schema)) {
+                    const group = el('div', { class: 'form-group' });
+                    group.appendChild(el('label', {}, schema.label || key));
+                    const val = settings.engine.tts_config[key] ?? schema.default;
+                    let input;
+                    if (schema.type === 'select') {
+                        input = el('select', { id: `set-tts-${key}` });
+                        for (const opt of schema.options) {
+                            const o = el('option', { value: opt }, opt);
+                            if (opt === val) o.selected = true;
+                            input.appendChild(o);
+                        }
+                    } else {
+                        const inputType = schema.type === 'float' || schema.type === 'integer' ? 'number' : 'text';
+                        input = el('input', { type: inputType, id: `set-tts-${key}`, value: val });
+                        if (schema.min !== undefined) input.min = schema.min;
+                        if (schema.max !== undefined) input.max = schema.max;
+                        if (schema.step) input.step = schema.step;
+                    }
+                    group.appendChild(input);
+                    container.appendChild(group);
+                }
+            }
+
+            // STT
+            container.appendChild(el('h3', { class: 'mb-md mt-lg' }, 'STT Engine (QA)'));
+            const sttGroup = el('div', { class: 'form-group' });
+            sttGroup.appendChild(el('label', {}, 'Whisper model size'));
+            const sttSelect = el('select', { id: 'set-stt-model' });
+            for (const opt of ['tiny', 'base', 'small', 'medium', 'large']) {
+                const o = el('option', { value: opt }, opt);
+                if (opt === (settings.engine.stt_config.model_size || 'medium')) o.selected = true;
+                sttSelect.appendChild(o);
+            }
+            sttGroup.appendChild(sttSelect);
+            container.appendChild(sttGroup);
+
+            // Audio settings
+            container.appendChild(el('h3', { class: 'mb-md mt-lg' }, 'Audio'));
+            const audioFields = [
+                ['target_lufs', 'Target LUFS', 'number', -24, -6, 0.5],
+                ['chunk_silence_ms', 'Chunk silence (ms)', 'number', 0, 2000, 50],
+                ['scene_break_silence_ms', 'Scene break silence (ms)', 'number', 0, 5000, 100],
+                ['chapter_break_silence_ms', 'Chapter break silence (ms)', 'number', 0, 10000, 100],
+            ];
+            for (const [key, label, type, min, max, step] of audioFields) {
+                const group = el('div', { class: 'form-group' });
+                group.appendChild(el('label', {}, label));
+                const input = el('input', {
+                    type, id: `set-audio-${key}`,
+                    value: settings.audio[key], min, max, step,
+                });
+                group.appendChild(input);
+                container.appendChild(group);
+            }
+        }
+
+        async function saveSettings() {
+            const update = { engine: { tts_config: {} }, audio: {} };
+
+            // TTS
+            const ttsEngine = document.getElementById('set-tts-engine');
+            if (ttsEngine) update.engine.tts_engine = ttsEngine.value;
+
+            // Gather all tts-* fields
+            document.querySelectorAll('[id^="set-tts-"]').forEach(input => {
+                if (input.id === 'set-tts-engine') return;
+                const key = input.id.replace('set-tts-', '');
+                let val = input.value;
+                if (input.type === 'number') val = parseFloat(val);
+                update.engine.tts_config[key] = val;
+            });
+
+            // STT
+            const sttModel = document.getElementById('set-stt-model');
+            if (sttModel) update.engine.stt_config = { model_size: sttModel.value };
+
+            // Audio
+            document.querySelectorAll('[id^="set-audio-"]').forEach(input => {
+                const key = input.id.replace('set-audio-', '');
+                update.audio[key] = parseFloat(input.value);
+            });
+
+            try {
+                await API.post('/api/settings/', update);
+                showToast('Settings saved', 'success');
+                closeModal('settings-modal');
+            } catch (err) {
+                showToast('Failed to save: ' + err.message, 'error');
+            }
+        }
+
+        /* ─── Modal helpers ────────────────────────── */
+
+        function openModal(id) {
+            document.getElementById(id).classList.add('visible');
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('visible');
+        }
+
+        // Close modal on overlay click
+        document.querySelectorAll('.modal-overlay').forEach(overlay => {
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) overlay.classList.remove('visible');
+            });
+        });
+
+        // Enter key in project name
+        document.getElementById('project-name').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') createProject();
+        });
+
+        loadProjects();
+    </script>
+</body>
+</html>
