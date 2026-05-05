@@ -1,0 +1,39 @@
+{
+  "engine": {
+    "tts_engine": "orpheus",
+    "tts_config": {
+      "model_path": "/home/hal/models/orpheus-model",
+      "max_model_len": 8192,
+      "default_voice": "zac",
+      "repetition_penalty": 1.2,
+      "temperature": 0.7
+    },
+    "stt_engine": "whisper",
+    "stt_config": {
+      "model_size": "medium"
+    },
+    "llm_engine": "none",
+    "llm_config": {
+      "api_key": "",
+      "model": "",
+      "base_url": ""
+    },
+    "extractor_engine": "docx",
+    "extractor_config": {}
+  },
+  "resource": {
+    "max_vram_gb": 9,
+    "max_tokens": 8192,
+    "pron_test_buffer_size": 5,
+    "chunk_test_buffer_size": 3
+  },
+  "audio": {
+    "target_lufs": -16,
+    "chunk_silence_ms": 300,
+    "scene_break_silence_ms": 1500,
+    "chapter_break_silence_ms": 3000,
+    "crossfade_ms": 50,
+    "sample_rate": 24000,
+    "export_format": "wav"
+  }
+}

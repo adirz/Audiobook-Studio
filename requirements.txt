@@ -1,0 +1,29 @@
+# Web framework
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+# Document extraction
+python-docx>=1.1
+
+# TTS (Orpheus)
+orpheus-speech>=0.1
+vllm==0.7.3
+huggingface-hub
+hf-transfer
+transformers==4.51.0
+
+# STT (Whisper)
+openai-whisper>=20231117
+
+# Audio processing
+pydub>=0.25
+pyloudnorm>=0.1
+soundfile>=0.12
+
+# NLP / word detection
+nltk>=3.8
+
+# General
+requests
+aiofiles>=23.0
