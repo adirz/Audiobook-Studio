@@ -89,6 +89,7 @@
             <span id="project-title" class="text-muted"></span>
             <a href="/" class="btn btn-ghost btn-small">← Projects</a>
             <button class="btn btn-ghost btn-small" onclick="openSettings()">⚙ Settings</button>
+            <button class="btn btn-ghost btn-small" style="color:var(--text-muted)" onclick="shutdownApp()" title="Gracefully stop the server">⏻ Shut down</button>
         </div>
     </header>
     <div class="app-body">
@@ -103,7 +104,6 @@
                 <li data-step="pronunciation" onclick="goStep('pronunciation')"><span class="step-dot"></span>Pronunciation</li>
                 <li data-step="tagging" onclick="goStep('tagging')"><span class="step-dot"></span>Emotion Tags</li>
                 <li data-step="generate" onclick="goStep('generate')"><span class="step-dot"></span>Generate Audio</li>
-                <li data-step="qa" onclick="goStep('qa')"><span class="step-dot"></span>QA Check</li>
                 <li data-step="review" onclick="goStep('review')"><span class="step-dot"></span>Review & Fix</li>
                 <li data-step="export" onclick="goStep('export')"><span class="step-dot"></span>Export</li>
             </ul>
@@ -115,17 +115,20 @@
 
             <section class="step-section" id="step-symbols"><div class="center-content"><h2>Review Symbols</h2><p class="text-muted mt-sm mb-lg">Mark which symbols are scene breaks.</p><div class="card" style="padding:0;" id="symbol-list"></div><div class="mt-md flex justify-between"><button class="btn btn-secondary" onclick="goStep('clean_chunk')">Skip</button><button class="btn btn-primary" onclick="saveSymbols()">Confirm & Continue</button></div></div></section>
 
-            <section class="step-section" id="step-clean_chunk"><div class="center-content"><h2>Clean & Chunk Text</h2><p class="text-muted mt-sm mb-lg">Normalize text and split into TTS-friendly chunks.</p><div class="card"><div class="form-group"><label>Max words per chunk</label><input type="number" id="max-words" value="150" min="50" max="500"></div><div class="form-group"><label>Min words per chunk</label><input type="number" id="min-words" value="30" min="10" max="100"></div><button class="btn btn-primary mt-md" onclick="cleanAndChunk()">Clean & Chunk</button><div id="chunk-status" class="mt-md"></div></div></div></section>
+            <section class="step-section" id="step-clean_chunk"><div class="center-content"><h2>Clean & Chunk Text</h2><p class="text-muted mt-sm mb-lg">Normalize text and split into TTS-friendly chunks.</p><div class="card"><div class="form-group"><label>Max words per chunk</label><input type="number" id="max-words" value="150" min="50" max="500"></div><div class="form-group"><label>Min words per chunk</label><input type="number" id="min-words" value="30" min="10" max="100"></div><div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal"><input type="checkbox" id="narrate-titles" onchange="document.getElementById('narrate-prefix-group').style.display=this.checked?'block':'none'">Narrate chapter titles as separate audio chunks</label><div id="narrate-prefix-group" style="display:none;margin-top:6px;margin-left:24px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal"><input type="checkbox" id="chapter-prefix" checked onchange="reloadChapterTitles()">Default to "Chapter X: Title" for chapters with no override (uncheck for "Title" only)</label></div></div><button class="btn btn-primary mt-md" onclick="cleanAndChunk()">Clean & Chunk</button><div id="chunk-status" class="mt-md"></div></div>
+
+<div class="card mt-lg" id="chapter-titles-card" style="display:none;"><h3 style="margin-top:0">Chapter Titles</h3><p class="text-muted mt-sm mb-md" style="font-size:0.9rem">Pick what gets narrated as the spoken title for each chapter. Leave blank to use the auto default; clear and click <em>Don't narrate</em> for chapters that shouldn't be announced (e.g. a Prologue you'd rather drop, or front matter). Anything you type is read verbatim, so you can also include a subtitle here.</p><div id="chapter-titles-list"></div><div class="mt-md flex gap-sm"><button class="btn btn-secondary btn-small" onclick="resetAllChapterTitles()" title="Revert every chapter to its auto default">Reset all to auto</button><button class="btn btn-primary" onclick="applyChapterTitles()">Save & rebuild title chunks</button></div><div id="chapter-titles-status" class="mt-sm" style="font-size:0.85rem"></div></div>
+
+<div class="mt-lg flex justify-end" id="clean-chunk-continue-bar" style="display:none"><button class="btn btn-primary" onclick="goStep('words')">Continue to Words →</button></div>
+</div></section>
 
             <section class="step-section" id="step-words"><div class="center-content"><h2>Non-Standard Words</h2><p class="text-muted mt-sm mb-lg">Words not in the English dictionary.</p><div id="word-scan-status" class="mb-md"></div><div class="card" style="padding:0;max-height:55vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>Word</th><th>Count</th><th>Context</th><th></th></tr></thead><tbody id="word-tbody"></tbody></table></div><div class="mt-lg"><h3>Add Standard Word Override</h3><p class="text-muted mt-sm mb-md" style="font-size:0.85rem;">Force a standard word to be pronounced differently.</p><div class="flex gap-sm"><input type="text" id="std-word" placeholder="Word" style="max-width:180px;"><input type="text" id="std-phonetic" placeholder="Pronunciation" style="max-width:180px;"><button class="btn btn-secondary" onclick="addStdOverride()">Add</button></div></div><div class="mt-lg flex justify-between"><div></div><button class="btn btn-primary" onclick="goStep('pronunciation')">Continue →</button></div></div></section>
 
-            <section class="step-section" id="step-pronunciation"><div class="center-content"><h2>Pronunciation Testing</h2><p class="text-muted mt-sm mb-lg">Listen to each word in context, adjust spelling until it sounds right.</p><div id="pron-summary" class="mb-md"></div><div id="pron-progress" class="mb-md"></div><div id="pron-card-area"></div><div class="mt-md"><button class="btn btn-ghost btn-small" onclick="togglePronDict()">📖 View / Edit Full Dictionary</button></div><div id="pron-dict-view" class="hidden mt-md"></div><div class="mt-lg flex justify-between"><button class="btn btn-secondary" onclick="skipAllPron()">Skip Remaining</button><button class="btn btn-primary" onclick="goStep('tagging')">Continue →</button></div></div></section>
+            <section class="step-section" id="step-pronunciation"><div class="center-content"><h2>Pronunciation Testing</h2><p class="text-muted mt-sm mb-lg">Listen to each word in context, adjust spelling until it sounds right.</p><div id="pron-tts-start-bar" class="card mb-md" style="padding:var(--space-md);display:flex;align-items:center;gap:12px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="startPronTTS(this)">Start Test Audio Generation</button><span class="text-muted" style="font-size:0.85rem">Loads the TTS engine and pre-generates test clips for upcoming words. You can still review entries without it, but no audio will be produced until you click this.</span></div><div id="pron-summary" class="mb-md"></div><div id="pron-progress" class="mb-md"></div><div id="pron-card-area"></div><div class="mt-md flex items-center gap-sm flex-wrap"><button class="btn btn-ghost btn-small" onclick="togglePronDict()">📖 View / Edit Full Dictionary</button><button class="btn btn-ghost btn-small" onclick="exportPronDict()" title="Download pronunciation dictionary as JSON">↓ Export Dictionary</button><button class="btn btn-ghost btn-small" onclick="document.getElementById('pron-import-file').click()" title="Import pronunciation dictionary from a JSON file">↑ Import Dictionary</button><input type="file" id="pron-import-file" accept=".json" style="display:none" onchange="importPronDict(this)"></div><div id="pron-dict-view" class="hidden mt-md"></div><div class="mt-lg flex justify-between"><button class="btn btn-secondary" onclick="skipAllPron()">Skip Remaining</button><button class="btn btn-primary" onclick="goStep('tagging')">Continue →</button></div></div></section>
 
             <section class="step-section" id="step-tagging"><div class="center-content"><h2>Emotion Tags</h2><p class="text-muted mt-sm mb-lg">Insert expression tags via LLM.</p><div id="tagging-content"></div></div></section>
 
-            <section class="step-section" id="step-generate"><div class="center-content"><h2>Generate Audio</h2><p class="text-muted mt-sm mb-lg">Generate TTS audio for all chunks.</p><div class="card"><div class="form-group"><label>Voice</label><select id="gen-voice"></select></div><div class="form-group"><label>Max retries</label><input type="number" id="gen-retries" value="3" min="1" max="10"></div><div class="flex gap-sm" style="margin-top:8px;margin-bottom:8px;"><button class="btn btn-primary" id="gen-start-btn" onclick="startGen()">Start</button><button class="btn btn-ghost" id="gen-pause-btn" onclick="pauseGen('generate')">Pause</button><button class="btn btn-ghost" id="gen-resume-btn" onclick="resumeGen('generate')">Continue</button><button class="btn btn-ghost" id="gen-stop-btn" onclick="stopGen('generate')">Stop</button></div><div style="border-top:var(--border);padding-top:10px;margin-top:8px;"><h4 style="margin:6px 0 8px 0">Quick Test</h4><div class="form-group"><label>Sample size</label><input type="number" id="gen-test-sample" value="5" min="1" max="200"></div><div class="form-group"><label>Max cycles</label><input type="number" id="gen-test-cycles" value="3" min="1" max="10"></div><div class="flex gap-sm"><button class="btn btn-secondary" onclick="startGenTest()">Run Test</button><div id="gen-test-progress" style="margin-left:8px"></div></div></div><div id="gen-progress" class="mt-md"></div></div></div></section>
-
-            <section class="step-section" id="step-qa"><div class="center-content"><h2>Quality Check</h2><p class="text-muted mt-sm mb-lg">This step transcribes generated audio and computes a word-level similarity score against the original text. Chunks scoring below the threshold are marked as failures for review; adjust the threshold to control strictness.</p><div class="card"><div class="form-group"><label>Similarity threshold</label><input type="number" id="qa-threshold" value="0.85" min="0.5" max="1.0" step="0.05"></div><button class="btn btn-primary" onclick="startQA()">Run QA</button><div id="qa-progress" class="mt-md"></div></div></div></section>
+            <section class="step-section" id="step-generate"><div style="padding:var(--space-lg);max-width:1100px;margin:0 auto;"><h2>Generate Audio</h2><p class="text-muted mt-sm mb-lg">Select which chunks to generate, then click Start. Progress follows you in the floating panel at bottom-right.</p><div class="card"><div class="flex gap-sm" style="flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;"><div class="form-group" style="margin-bottom:0;flex:0 0 auto;"><label>Default voice</label><select id="gen-voice"></select></div><div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;margin-left:8px;"><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;">Select:</span><button class="btn btn-ghost btn-small" onclick="genSelectMode('pending')" title="Check all chunks with no audio yet">Continue</button><button class="btn btn-ghost btn-small" onclick="genSelectMode('all')">All</button><button class="btn btn-ghost btn-small" onclick="genSelectMode('failed')" title="Check QA-failed, flagged, or errored chunks">Failed</button><button class="btn btn-ghost btn-small" onclick="genSelectMode('none')">None</button><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 6px;"></span><button id="gen-start-btn" class="btn btn-primary" onclick="startGen()">Start</button><button id="gen-pause-btn" class="btn btn-ghost" onclick="pauseGen('generate')" title="Suspend after the current chunk — use Resume to continue">Pause</button><button id="gen-resume-btn" class="btn btn-ghost" onclick="resumeGen('generate')">Resume</button><button id="gen-stop-btn" class="btn btn-ghost" onclick="stopGen('generate')" title="Stop permanently after the current chunk (cannot be resumed)">Stop</button></div></div><div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:0.82rem;"><span style="color:var(--text-muted)">Filter:</span><button class="btn btn-ghost btn-small" onclick="genFilter('all')" id="gen-filter-all">All</button><button class="btn btn-ghost btn-small" onclick="genFilter('after_scene')" id="gen-filter-after_scene" title="Chunks that come after a scene break inside their chapter">After scene break</button><button class="btn btn-ghost btn-small" onclick="genFilter('before_scene')" id="gen-filter-before_scene" title="Chunks before any scene break in their chapter (the default narration)">Other (no scene break before)</button><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 6px;"></span><span style="color:var(--text-muted)">Voice for selection:</span><select id="gen-bulk-voice" style="font-size:0.82rem"></select><button class="btn btn-secondary btn-small" onclick="setVoiceForSelection()" title="Apply this voice to every checked chunk">Apply</button><button class="btn btn-ghost btn-small" onclick="setVoiceForSelection(null)" title="Clear voice override on every checked chunk (revert to the default voice)">Clear</button></div><div id="gen-chunk-list" style="max-height:60vh;overflow-y:auto;border:var(--border);border-radius:var(--radius-sm);"></div><div id="gen-progress" class="mt-sm" style="font-size:0.85rem;"></div></div></div></section>
 
             <section class="step-section" id="step-review">
                 <div class="review-layout">
@@ -135,9 +138,10 @@
                                 <select id="review-step-jump" onchange="goStep(this.value)" style="background:var(--bg-elevated);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:4px 8px;border-radius:var(--radius-sm);cursor:pointer;">
                                     <option value="upload">Upload</option><option value="range">Range</option><option value="symbols">Symbols</option>
                                     <option value="clean_chunk">Clean</option><option value="words">Words</option><option value="pronunciation">Pronunciation</option>
-                                    <option value="tagging">Tags</option><option value="generate">Generate</option><option value="qa">QA</option>
+                                    <option value="tagging">Tags</option><option value="generate">Generate</option>
                                     <option value="review" selected>Review</option><option value="export">Export</option>
                                 </select>
+                                <button class="btn btn-ghost btn-small" style="margin-left:8px;padding:6px 8px;font-size:0.78rem" onclick="goStep(document.getElementById('review-step-jump').value)">Go</button>
                                 <span id="review-stats" class="text-faint" style="font-size:0.72rem;"></span>
                             </div>
                             <span style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);">Chapters</span>
@@ -155,11 +159,15 @@
                             <span class="t-time" id="transport-time">0:00</span>
                             <span class="t-chunk-id" id="transport-chunk-id">—</span>
                         </div>
-                        <div class="flex gap-sm" style="margin-left:auto;">
+                        <div class="flex gap-sm" style="margin-left:auto;align-items:center;flex-wrap:wrap;">
                             <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
                             <button class="filter-btn" onclick="setFilter('flagged',this)">Flagged</button>
                             <button class="filter-btn" onclick="setFilter('qa_fail',this)">QA Fail</button>
                             <button class="filter-btn" onclick="setFilter('no_audio',this)">No Audio</button>
+                            <span style="border-left:var(--border);height:18px;display:inline-block;margin:0 4px;"></span>
+                            <input type="number" id="rv-qa-threshold" value="0.85" min="0.5" max="1.0" step="0.05" style="width:62px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="QA similarity threshold (0.85 = 85% word match required to pass)">
+                            <button class="btn btn-ghost btn-small" onclick="openModal('qa-explain-modal')" title="How QA scoring works" style="padding:3px 7px">?</button>
+                            <button class="btn btn-secondary btn-small" onclick="startReviewQA()">Run QA</button>
                         </div>
                     </div>
                     <div class="review-body"><div class="review-text-panel" id="review-text-panel"></div></div>
@@ -174,11 +182,14 @@
 <!-- Flag Modal -->
 <div class="modal-overlay" id="flag-modal"><div class="modal"><h2>Flag Issue</h2><p class="text-muted mb-md" id="flag-chunk-label"></p><div id="flag-options" class="mb-md"></div><div class="form-group"><label>Notes</label><textarea id="flag-notes" rows="2"></textarea></div><div class="form-group"><label>Word range (e.g. "12-15")</label><input type="text" id="flag-range"></div><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('flag-modal')">Cancel</button><button class="btn btn-primary" onclick="submitFlag()">Flag</button></div></div></div>
 
-<!-- Override Modal -->
-<div class="modal-overlay" id="override-modal"><div class="modal"><h2>Location Pronunciation Override</h2><p class="text-muted mb-md">Override pronunciation for a word in this specific chunk only.</p><div class="form-group"><label>Word</label><input type="text" id="ov-word"></div><div class="form-group"><label>Pronunciation</label><input type="text" id="ov-phonetic"></div><input type="hidden" id="ov-chunk-id"><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('override-modal')">Cancel</button><button class="btn btn-primary" onclick="submitOverride()">Save</button></div></div></div>
+<!-- Edit Chunk TTS Text Modal -->
+<div class="modal-overlay" id="edit-chunk-modal"><div class="modal" style="max-width:680px"><h2>Edit TTS Text</h2><p class="text-muted mb-sm" id="edit-chunk-id-label" style="font-family:var(--font-mono);font-size:0.82rem;"></p><textarea id="edit-chunk-text" rows="9" style="width:100%;box-sizing:border-box;font-family:var(--font-reading);font-size:0.95rem;line-height:1.65;"></textarea><p class="text-faint mt-sm" style="font-size:0.78rem;">This is what the TTS engine will read. The original manuscript text is unchanged. Use ↻ to regenerate after saving.</p><div class="modal-actions"><button class="btn btn-ghost btn-small" onclick="clearChunkEdit()" title="Remove override and revert to automatic text">Clear override</button><button class="btn btn-secondary" onclick="closeModal('edit-chunk-modal')">Cancel</button><button class="btn btn-primary" onclick="saveChunkEdit()">Save</button></div></div></div>
 
 <!-- Settings Modal -->
 <div class="modal-overlay" id="settings-modal"><div class="modal"><h2>Settings</h2><p class="text-muted mb-md">Edit application settings (JSON). Changes will be applied when saved.</p><textarea id="settings-json" rows="12" style="width:100%;font-family:var(--font-mono);font-size:0.85rem;padding:8px;box-sizing:border-box;"></textarea><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('settings-modal')">Cancel</button><button class="btn btn-primary" onclick="saveSettings()">Save</button></div></div></div>
+
+<!-- QA threshold explanation modal -->
+<div class="modal-overlay" id="qa-explain-modal"><div class="modal"><h2>Similarity Threshold</h2><p class="text-muted mb-md">The QA computes a word-level similarity between the original text and the STT transcription. It counts matching words vs. total differing words; pronunciation substitutions that are expected (marked <em>pron_expected</em>) are ignored when computing the adjusted score. The <strong>Similarity threshold</strong> is the minimum adjusted similarity required for a chunk to <em>pass</em> QA (e.g. 0.85 means at least 85% similarity). Increase the threshold to be stricter, or lower it to be more permissive.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('qa-explain-modal')">Close</button></div></div></div>
 
 <!-- Debug banner and global error handlers (helps capture parse/runtime errors) -->
 <div id="debug-banner" style="display:none;position:fixed;top:0;left:0;right:0;background:#ffdddd;color:#900;padding:8px;z-index:9999;font-family:var(--font-mono);font-size:0.9rem;">JS errors will appear here.</div>
@@ -200,8 +211,8 @@ window.addEventListener('unhandledrejection', function(ev){
 });
 console.log('Debug banner installed');
 </script>
-<script src="/static/js/api.js"></script>
-<script src="/static/js/player.js"></script>
+<script src="/static/js/api.js?v=4"></script>
+<script src="/static/js/player.js?v=4"></script>
 <script>
 const P = new URLSearchParams(window.location.search);
 const SLUG = P.get('project');
@@ -237,7 +248,7 @@ async function init(){
         projectInfo=await API.get(`/api/projects/${SLUG}`);
         document.getElementById('project-title').textContent=projectInfo.name;
         document.title=`${projectInfo.name} — Audiobook Studio`;
-        const map={'new':'upload','source_selected':'range','extracted':'symbols','symbols_reviewed':'clean_chunk','cleaned':'clean_chunk','chunked':'words','words_scanned':'words','pron_built':'pronunciation','pron_tested':'tagging','tagged':'generate','test_generated':'generate','generated':'qa','qa_done':'review','reviewed':'export'};
+        const map={'new':'upload','source_selected':'range','extracted':'symbols','symbols_reviewed':'clean_chunk','cleaned':'clean_chunk','chunked':'words','words_scanned':'words','pron_built':'pronunciation','pron_tested':'tagging','tagged':'generate','test_generated':'generate','generated':'review','qa_done':'review','reviewed':'export'};
         goStep(map[projectInfo.current_step]||'upload');
     }catch(e){showToast(e.message,'error');}
 }
@@ -247,14 +258,32 @@ function goStep(s){
     document.querySelectorAll('.step-section').forEach(x=>x.classList.remove('active'));
     document.getElementById('step-'+s)?.classList.add('active');
     document.getElementById('main-sidebar').style.display=s==='review'?'none':'';
+    // Keep the review-step-jump select in sync so it can be clicked again
+    try{ const sel = document.getElementById('review-step-jump'); if(sel) sel.value = s; }catch(_){ }
     loadStep(s);
 }
 async function loadStep(s){try{switch(s){
     case 'range':await loadHeadings();break;case 'symbols':await loadSymbols();break;
+    case 'clean_chunk':await loadCleanChunk();break;
     case 'words':await loadWords();break;case 'pronunciation':await loadPron();break;
-    case 'tagging':await loadTagging();break;case 'generate':await loadVoices();break;
+    case 'tagging':await loadTagging();break;case 'generate':await loadGen();break;
     case 'review':await loadReview();break;
 }}catch(e){showToast(e.message,'error');}}
+
+async function loadCleanChunk(){
+    // If chapters already exist (user has previously extracted), show the
+    // narration-title editor right away so they can refine titles without
+    // having to click Clean & Chunk again.
+    try{
+        const prefix = document.getElementById('chapter-prefix')?.checked ?? true;
+        const chs = await API.get(`/api/pipeline/${SLUG}/chapters?chapter_prefix=${prefix}`);
+        if(chs && chs.length){
+            await reloadChapterTitles();
+            document.getElementById('chapter-titles-card').style.display='';
+            document.getElementById('clean-chunk-continue-bar').style.display='';
+        }
+    }catch(_){ /* chapters not yet extracted — leave editor hidden */ }
+}
 
 /* ═══ Upload ═══ */
 function handleDrop(e){e.preventDefault();uploadFile(e.dataTransfer.files[0]);}
@@ -273,7 +302,112 @@ async function loadSymbols(){symbols=await API.get(`/api/pipeline/${SLUG}/symbol
 async function saveSymbols(){const d=[];document.querySelectorAll('.sb-check').forEach(cb=>d.push({symbol_id:+cb.dataset.id,is_scene_break:cb.checked}));await API.post(`/api/pipeline/${SLUG}/symbols`,d);showToast('Saved','success');goStep('clean_chunk');}
 
 /* ═══ Clean & Chunk ═══ */
-async function cleanAndChunk(){const s=document.getElementById('chunk-status');s.innerHTML='<span class="text-muted">Working...</span>';try{await API.post(`/api/pipeline/${SLUG}/clean`);const r=await API.post(`/api/pipeline/${SLUG}/chunk?max_words=${document.getElementById('max-words').value}&min_words=${document.getElementById('min-words').value}`);s.innerHTML=`<span class="badge badge-success">${r.chunks_created} chunks</span>`;setTimeout(()=>goStep('words'),600);}catch(e){s.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}}
+async function cleanAndChunk(){
+    const s=document.getElementById('chunk-status');
+    s.innerHTML='<span class="text-muted">Working...</span>';
+    try{
+        await API.post(`/api/pipeline/${SLUG}/clean`);
+        const narrate=document.getElementById('narrate-titles')?.checked||false;
+        const prefix=document.getElementById('chapter-prefix')?.checked??true;
+        const r=await API.post(`/api/pipeline/${SLUG}/chunk?max_words=${document.getElementById('max-words').value}&min_words=${document.getElementById('min-words').value}&narrate_titles=${narrate}&chapter_prefix=${prefix}`);
+        s.innerHTML=`<span class="badge badge-success">${r.chunks_created} chunks</span>`;
+        // Surface the per-chapter title editor so the user can fine-tune
+        // what gets narrated as the title (including skipping chapters
+        // like a Prologue, or pasting in a subtitle).
+        await reloadChapterTitles();
+        document.getElementById('chapter-titles-card').style.display='';
+        document.getElementById('clean-chunk-continue-bar').style.display='';
+    }catch(e){
+        s.innerHTML=`<span class="badge badge-error">${e.message}</span>`;
+    }
+}
+
+async function reloadChapterTitles(){
+    const list = document.getElementById('chapter-titles-list');
+    if(!list) return;
+    const prefix = document.getElementById('chapter-prefix')?.checked ?? true;
+    let chs;
+    try{
+        chs = await API.get(`/api/pipeline/${SLUG}/chapters?chapter_prefix=${prefix}`);
+    }catch(e){
+        list.innerHTML = `<div class="text-muted" style="font-size:0.85rem">${e.message}</div>`;
+        return;
+    }
+    if(!chs.length){
+        list.innerHTML = '<div class="text-muted" style="font-size:0.85rem">No chapters extracted yet.</div>';
+        return;
+    }
+    let html = '<table class="data-table" style="width:100%"><thead><tr>' +
+        '<th style="width:36px;text-align:right">#</th>' +
+        '<th>Original heading</th>' +
+        '<th>Narrated title (blank = auto, "—" button = skip)</th>' +
+        '<th style="width:54px"></th>' +
+        '</tr></thead><tbody>';
+    for(const c of chs){
+        const isSkipped = (c.narration_title === '');
+        const isOverride = (c.narration_title !== null && c.narration_title !== '');
+        const inputVal = isOverride ? c.narration_title : '';
+        const placeholder = isSkipped ? '(not narrated)' : (c.auto_title || '');
+        const inputStyle = isSkipped ? 'opacity:0.55' : '';
+        html += `<tr data-chid="${c.id}">` +
+            `<td style="text-align:right;color:var(--text-muted);font-family:var(--font-mono)">${c.idx + 1}</td>` +
+            `<td style="font-size:0.85rem">${escapeHtml(c.title)}</td>` +
+            `<td><input type="text" class="ch-narration-input" data-chid="${c.id}" value="${escapeHtml(inputVal)}" placeholder="${escapeHtml(placeholder)}" style="width:100%;${inputStyle}"></td>` +
+            `<td><button class="btn btn-ghost btn-small" title="Toggle: skip narration for this chapter" onclick="toggleSkipChapterTitle(${c.id})">${isSkipped?'↺':'—'}</button></td>` +
+        `</tr>`;
+    }
+    html += '</tbody></table>';
+    list.innerHTML = html;
+}
+
+async function toggleSkipChapterTitle(chid){
+    const row = document.querySelector(`tr[data-chid="${chid}"]`);
+    if(!row) return;
+    const input = row.querySelector('.ch-narration-input');
+    const isCurrentlySkipped = (input.style.opacity === '0.55');
+    if(isCurrentlySkipped){
+        // Revert to auto: clear value and let placeholder show through
+        await API.request('PATCH', `/api/pipeline/${SLUG}/chapters/${chid}/narration`, {narration_title: null});
+    } else {
+        await API.request('PATCH', `/api/pipeline/${SLUG}/chapters/${chid}/narration`, {narration_title: ''});
+    }
+    await reloadChapterTitles();
+}
+
+async function resetAllChapterTitles(){
+    if(!confirm('Reset every chapter to its auto-default narration title?')) return;
+    const list = document.getElementById('chapter-titles-list');
+    const ids = [...list.querySelectorAll('tr[data-chid]')].map(tr => parseInt(tr.dataset.chid));
+    for(const id of ids){
+        try{ await API.request('PATCH', `/api/pipeline/${SLUG}/chapters/${id}/narration`, {narration_title: null}); }catch(_){ }
+    }
+    await reloadChapterTitles();
+    showToast('All titles reset to auto', 'success');
+}
+
+async function applyChapterTitles(){
+    // Save any inline edits, then rebuild title chunks
+    const status = document.getElementById('chapter-titles-status');
+    status.innerHTML = '<span class="text-muted">Saving…</span>';
+    const inputs = document.querySelectorAll('.ch-narration-input');
+    try{
+        for(const inp of inputs){
+            const chid = parseInt(inp.dataset.chid);
+            const val = inp.value;
+            // If input is empty and the row was previously skipped, leave it
+            // skipped (empty string). Otherwise empty means "revert to auto".
+            const wasSkipped = (inp.style.opacity === '0.55');
+            const payload = (val === '' && wasSkipped) ? '' : (val === '' ? null : val);
+            await API.request('PATCH', `/api/pipeline/${SLUG}/chapters/${chid}/narration`, {narration_title: payload});
+        }
+        const prefix = document.getElementById('chapter-prefix')?.checked ?? true;
+        const r = await API.post(`/api/pipeline/${SLUG}/title-chunks/refresh?chapter_prefix=${prefix}`);
+        status.innerHTML = `<span class="badge badge-success">${r.created} title chunks rebuilt</span>`;
+        await reloadChapterTitles();
+    }catch(e){
+        status.innerHTML = `<span class="badge badge-error">${e.message}</span>`;
+    }
+}
 
 /* ═══ Words ═══ */
 async function loadWords(){
@@ -331,12 +465,33 @@ async function openPronEntry(entryId){
         if(idx>=0){ pronI = idx; }
         else { showToast('Entry not found','error'); return; }
         updPronProg(); loadPronSummary(); renderPronCard(pronE[pronI]);
-        try{ if(pronE.length && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);}catch(_){ }
+        try{ if(pronTTSStarted && pronE.length && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);}catch(_){ }
     }catch(e){ showToast(e.message,'error'); }
 }
 
 /* ═══ Pronunciation ═══ */
 let pronE=[],pronI=0;
+// Whether the user has explicitly started the TTS engine for this session.
+// Until this is true, no automatic prefill calls are made — the user must
+// click "Start Test Audio Generation" to load the model and queue clips.
+let pronTTSStarted=false;
+
+async function startPronTTS(btn){
+    const bar = document.getElementById('pron-tts-start-bar');
+    if(btn) { btn.disabled = true; btn.textContent = 'Loading TTS…'; }
+    try{
+        if(pronE.length && pronE[pronI]){
+            await API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);
+        }
+        pronTTSStarted = true;
+        if(bar) bar.style.display='none';
+        showToast('TTS started — test clips will appear as they generate', 'success');
+    }catch(e){
+        showToast(e.message, 'error');
+        if(btn) { btn.disabled = false; btn.textContent = 'Start Test Audio Generation'; }
+    }
+}
+
 async function loadPron(){
     // Load all pronunciation entries but start at the first pending one
     pronE = await API.get(`/api/pipeline/${SLUG}/pron`);
@@ -346,7 +501,10 @@ async function loadPron(){
     loadPronSummary();
     if(pronE.length) renderPronCard(pronE[pronI]);
     else document.getElementById('pron-card-area').innerHTML = '<div class="card text-muted">All entries reviewed.</div>';
-    try{ if(pronE.length && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`); }catch(_){ }
+    // Reflect prior in-session state of the start button
+    const bar = document.getElementById('pron-tts-start-bar');
+    if(bar) bar.style.display = pronTTSStarted ? 'none' : '';
+    try{ if(pronTTSStarted && pronE.length && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`); }catch(_){ }
 }
 function updPronProg(){const t=pronE.length;document.getElementById('pron-progress').innerHTML=t?`<div class="flex justify-between text-muted mb-sm" style="font-size:0.85rem"><span>${pronI+1}/${t}</span><span>${Math.round(pronI/t*100)}%</span></div>`+renderProgressBar(pronI,t).outerHTML:'';}
 async function renderPronCard(e){
@@ -550,14 +708,14 @@ async function testPr(e, btn){
 }
 async function choosePr(e){const ph=document.getElementById('pron-input').value.trim();await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,phonetic:ph||null,status:'approved'});showToast(`${e.word}→${ph}`,'success');pronNext();}
 async function pronAct(a){const e=pronE[pronI];if(a==='skip')await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,status:'skipped'});else await API.post(`/api/pipeline/${SLUG}/pron/${e.id}/update`,{entry_id:e.id,phonetic:null,status:'approved'});pronNext();}
-function pronNext(){pronI++;updPronProg();loadPronSummary();if(pronI<pronE.length){renderPronCard(pronE[pronI]);try{API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);}catch(_){}}else document.getElementById('pron-card-area').innerHTML='<div class="card text-muted">All done!</div>';}
+function pronNext(){pronI++;updPronProg();loadPronSummary();if(pronI<pronE.length){renderPronCard(pronE[pronI]);try{if(pronTTSStarted) API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`);}catch(_){}}else document.getElementById('pron-card-area').innerHTML='<div class="card text-muted">All done!</div>';}
 function pronPrev(){
     if(pronI<=0) return;
     pronI--;
     updPronProg();
     loadPronSummary();
     renderPronCard(pronE[pronI]);
-    try{ if(pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`); }catch(_){ }
+    try{ if(pronTTSStarted && pronE[pronI].status==='pending') API.post(`/api/pipeline/${SLUG}/pron/prefill?current_entry_id=${pronE[pronI].id}`); }catch(_){ }
 }
 async function skipAllPron(){await API.post(`/api/pipeline/${SLUG}/pron/skip-all`);showToast('Skipped','success');goStep('tagging');}
 
@@ -613,10 +771,11 @@ async function togglePronDict(){
             const td3=document.createElement('td');td3.innerHTML=`<span class="badge ${statusCls}">${e.status}</span>`;tr.appendChild(td3);
             // Freq
             const td4=document.createElement('td');td4.className='text-muted';td4.textContent=e.frequency+'×';tr.appendChild(td4);
-            // Remove
-            const td5=document.createElement('td');
-            const btn=document.createElement('button');btn.className='btn btn-ghost btn-small';btn.textContent='✕';btn.onclick=()=>removePronEntry(e.id);
-            td5.appendChild(btn);tr.appendChild(td5);
+            // Actions: jump + remove
+            const td5=document.createElement('td');td5.style.cssText='white-space:nowrap';
+            const jumpBtn=document.createElement('button');jumpBtn.className='btn btn-ghost btn-small';jumpBtn.title='Jump to card';jumpBtn.textContent='→';jumpBtn.onclick=()=>pronJumpTo(e.id);
+            const delBtn=document.createElement('button');delBtn.className='btn btn-ghost btn-small';delBtn.textContent='✕';delBtn.onclick=()=>removePronEntry(e.id);
+            td5.appendChild(jumpBtn);td5.appendChild(delBtn);tr.appendChild(td5);
             tb.appendChild(tr);
         }
         view.innerHTML='';view.appendChild(tbl);
@@ -625,6 +784,34 @@ async function togglePronDict(){
 
 async function removePronEntry(entryId){
     try{await API.del(`/api/pipeline/${SLUG}/pron/${entryId}`);document.getElementById(`pron-dict-row-${entryId}`)?.remove();showToast('Removed','success');loadPronSummary();}catch(e){showToast(e.message,'error');}
+}
+
+function pronJumpTo(entryId){
+    const idx = pronE.findIndex(e=>e.id===entryId);
+    if(idx<0){ showToast('Entry not in current list','error'); return; }
+    pronI=idx;
+    updPronProg();
+    loadPronSummary();
+    renderPronCard(pronE[pronI]);
+    document.getElementById('pron-dict-view').classList.add('hidden');
+}
+
+function exportPronDict(){
+    window.location.href = `/api/pipeline/${SLUG}/pron/export`;
+}
+
+async function importPronDict(input){
+    const file = input.files[0];
+    if(!file) return;
+    input.value = '';
+    try{
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if(!data.entries || !Array.isArray(data.entries)) throw new Error('Invalid format — expected {"entries":[...]}');
+        const r = await API.post(`/api/pipeline/${SLUG}/pron/import`, data);
+        showToast(`${r.imported} new, ${r.updated} updated`, 'success');
+        await loadPron();
+    }catch(e){ showToast(e.message, 'error'); }
 }
 
 /* ═══ Tagging ═══ */
@@ -651,13 +838,19 @@ async function testTag(){const area=document.getElementById('tag-results');area.
 async function applyTag(){try{await API.post(`/api/pipeline/${SLUG}/tagging/apply`,{system_prompt:document.getElementById('tag-prompt').value});const area=document.getElementById('tag-results');await API.pollTask(SLUG,'tagging',d=>{area.innerHTML=d.status==='done'?'<span class="badge badge-success">Done</span>':`<span class="text-muted">${d.current||0}/${d.total||'?'}</span>`;});showToast('Tagged','success');}catch(e){showToast(e.message,'error');}}
 
 /* ═══ Generate ═══ */
-async function loadVoices(){
+let _genChunks = [];
+let _genCollapsed = new Set();
+let _genChapters = [];
+let _genVoices = [];   // cached voice list for inline / bulk selectors
+let _genFilter = 'all'; // 'all' | 'after_scene' | 'before_scene'
+
+async function loadGen(){
+    // Load voices
     try{
-        const v = await API.get('/api/settings/tts/voices');
+        _genVoices = await API.get('/api/settings/tts/voices') || [];
         const s = document.getElementById('gen-voice');
         s.innerHTML = '';
-        for(const x of v) s.appendChild(el('option',{value:x.id},`${x.name} — ${x.description}`));
-        // Use project-saved voice if available, otherwise app default
+        for(const x of _genVoices) s.appendChild(el('option',{value:x.id},`${x.name} — ${x.description}`));
         try{
             const pvoice = projectInfo?.voice || '';
             if(pvoice) s.value = pvoice;
@@ -666,35 +859,361 @@ async function loadVoices(){
                 s.value = st.engine.tts_config.default_voice || (s.options[0] && s.options[0].value) || '';
             }
         }catch(_){ }
+        // Populate the bulk-voice picker too (with a "(default)" option
+        // that clears any per-chunk override).
+        const bulk = document.getElementById('gen-bulk-voice');
+        if(bulk){
+            bulk.innerHTML = '';
+            bulk.appendChild(el('option',{value:''},'(default voice)'));
+            for(const x of _genVoices) bulk.appendChild(el('option',{value:x.id},x.name));
+        }
     }catch(_){ }
+    // Load chapter info for collapsible headers
+    try{ _genChapters = await API.get(`/api/audio/${SLUG}/review/chapters`); }catch(_){ _genChapters = []; }
+    // Load chunks with status
+    try{
+        _genChunks = await API.get(`/api/audio/${SLUG}/review`);
+        genRenderChunks();
+        genSelectMode('pending');
+        genUpdateFilterButtons();
+    }catch(e){
+        const cl = document.getElementById('gen-chunk-list');
+        if(cl) cl.innerHTML = `<div class="text-muted" style="padding:12px">${e.message}</div>`;
+    }
 }
 
+function _voiceLabel(voiceId){
+    if(!voiceId) return '';
+    const v = _genVoices.find(x => x.id === voiceId);
+    return v ? v.name : voiceId;
+}
+
+function _voiceOptionsHtml(selectedVoice){
+    // Returns <option> markup for a per-chunk voice <select>. Empty value
+    // means "inherit the default voice".
+    let h = `<option value="">(default)</option>`;
+    for(const v of _genVoices){
+        const sel = (selectedVoice === v.id) ? ' selected' : '';
+        h += `<option value="${v.id}"${sel}>${v.name}</option>`;
+    }
+    return h;
+}
+
+function _matchesFilter(c){
+    if(_genFilter === 'all') return true;
+    const sc = c.scene_index || 1;
+    if(_genFilter === 'after_scene') return sc >= 2;
+    if(_genFilter === 'before_scene') return sc === 1;
+    return true;
+}
+
+function genUpdateFilterButtons(){
+    for(const m of ['all','after_scene','before_scene']){
+        const btn = document.getElementById('gen-filter-'+m);
+        if(!btn) continue;
+        btn.classList.toggle('btn-secondary', _genFilter === m);
+        btn.classList.toggle('btn-ghost', _genFilter !== m);
+    }
+}
+
+function genFilter(mode){
+    _genFilter = mode;
+    genUpdateFilterButtons();
+    genRenderChunks();
+}
+
+function _chunkGenStatus(c){
+    if(!c.has_audio) return (c.generation && c.generation.status==='error') ? 'error' : 'pending';
+    if(c.flags && c.flags.length) return 'flagged';
+    if(c.qa){
+        if(c.qa.status==='pass') return 'pass';
+        if(c.qa.status==='fail') return 'fail';
+    }
+    return 'audio';
+}
+
+function _genBadge(status){
+    return {
+        pending:    '<span class="badge badge-warning">pending</span>',
+        error:      '<span class="badge badge-error">error</span>',
+        audio:      '<span class="badge badge-info">generated</span>',
+        pass:       '<span class="badge badge-success">pass</span>',
+        fail:       '<span class="badge badge-error">fail</span>',
+        flagged:    '<span class="badge badge-error">flagged</span>',
+        generating: '<span class="badge" style="background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent)">generating…</span>',
+    }[status] || '<span class="badge">?</span>';
+}
+
+function genRenderChunks(){
+    const container = document.getElementById('gen-chunk-list');
+    if(!container) return;
+    if(!_genChunks.length){
+        container.innerHTML = '<div class="text-muted" style="padding:12px">No chunks found. Complete Clean & Chunk first.</div>';
+        return;
+    }
+
+    // Group chunks by chapter prefix (e.g. "ch000")
+    const byChapter = new Map();
+    for(const c of _genChunks){
+        const prefix = c.id.split('_')[0];
+        if(!byChapter.has(prefix)) byChapter.set(prefix, []);
+        byChapter.get(prefix).push(c);
+    }
+
+    // Build chapter title lookup from fetched chapter data
+    const chTitleMap = {};
+    for(const ch of _genChapters){
+        chTitleMap[`ch${String(ch.idx).padStart(3,'0')}`] = ch.title;
+    }
+
+    let html = `<table class="data-table" style="width:100%"><thead><tr>` +
+        `<th style="width:32px;padding:8px 10px;"><input type="checkbox" id="gen-select-all" title="Select / deselect all" onchange="genToggleAll(this.checked)"></th>` +
+        `<th style="white-space:nowrap">Chunk</th><th>Status</th><th style="white-space:nowrap">Voice</th><th>Text</th></tr></thead><tbody>`;
+
+    for(const [prefix, chunks] of byChapter){
+        // Apply the active filter when deciding which rows to render.
+        const filtered = chunks.filter(_matchesFilter);
+        if(!filtered.length) continue;
+
+        const collapsed = _genCollapsed.has(prefix);
+        const chTitle = chTitleMap[prefix] || '';
+        const chIdx = parseInt(prefix.slice(2), 10);
+        const displayTitle = chTitle ? `Chapter ${chIdx + 1}: ${chTitle}` : prefix;
+        const nDone = filtered.filter(c=>{ const s=_chunkGenStatus(c); return s==='pass'||s==='audio'; }).length;
+        const nPend = filtered.filter(c=>{ const s=_chunkGenStatus(c); return s==='pending'||s==='error'; }).length;
+        const nFail = filtered.filter(c=>{ const s=_chunkGenStatus(c); return s==='fail'||s==='flagged'; }).length;
+        let stats = '';
+        if(nDone) stats += `<span style="color:var(--success);margin-left:10px;font-weight:normal">${nDone} done</span>`;
+        if(nPend) stats += `<span style="color:var(--text-muted);margin-left:10px;font-weight:normal">${nPend} pending</span>`;
+        if(nFail) stats += `<span style="color:var(--error);margin-left:10px;font-weight:normal">${nFail} failed</span>`;
+
+        html += `<tr style="background:var(--bg-elevated);cursor:pointer;user-select:none" onclick="genToggleChapter('${prefix}')">` +
+            `<td colspan="5" style="padding:8px 12px;font-size:0.82rem;font-weight:600;">` +
+            `<span style="margin-right:6px;font-size:0.68rem;color:var(--text-faint)">${collapsed?'▶':'▼'}</span>` +
+            `${displayTitle}${stats}` +
+            `<span style="float:right;font-size:0.72rem;color:var(--text-faint);font-weight:normal">${filtered.length} chunks</span>` +
+            `</td></tr>`;
+
+        if(!collapsed){
+            // Group filtered chunks by their scene_index so we can emit a
+            // scene-separator row with a "Select scene" button and an
+            // inline voice picker that applies to the whole scene.
+            let lastScene = null;
+            const sceneIds = new Map(); // scene_index -> [chunk_id]
+            for(const c of filtered){
+                const sc = c.scene_index || 1;
+                if(!sceneIds.has(sc)) sceneIds.set(sc, []);
+                sceneIds.get(sc).push(c.id);
+            }
+            for(const c of filtered){
+                const sc = c.scene_index || 1;
+                if(sc !== lastScene){
+                    // Use a scene voice that's "common" if every chunk in
+                    // the scene already shares the same override; else
+                    // empty (default).
+                    const ids = sceneIds.get(sc);
+                    const voices = new Set(ids.map(id => (_genChunks.find(x=>x.id===id)?.voice || '')));
+                    const sceneVoice = (voices.size === 1) ? [...voices][0] : '';
+                    const label = sc === 1 ? 'Default narration (before any scene break)' : `Scene ${sc}`;
+                    html += `<tr style="background:var(--bg-elevated)"><td colspan="5" style="padding:6px 12px 6px 28px;font-size:0.78rem;color:var(--text-muted);">` +
+                        `<span style="font-weight:600;color:var(--text-secondary)">${label}</span>` +
+                        ` <span class="text-faint" style="margin-left:6px">${ids.length} chunks</span>` +
+                        ` <button class="btn btn-ghost btn-small" style="margin-left:10px" onclick="selectScene('${prefix}', ${sc})" title="Check every chunk in this scene">Select scene</button>` +
+                        ` <span style="margin-left:10px">Voice:</span>` +
+                        ` <select onchange="setSceneVoice('${prefix}', ${sc}, this.value)" style="font-size:0.78rem">${_voiceOptionsHtml(sceneVoice)}</select>` +
+                        `</td></tr>`;
+                    lastScene = sc;
+                }
+                const st = _chunkGenStatus(c);
+                const exc = (c.original_text||'').slice(0,90).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+                html += `<tr style="cursor:pointer" onclick="genRowClick(event,'${c.id}')">` +
+                    `<td style="padding:5px 10px"><input type="checkbox" class="gen-cb" data-cid="${c.id}" onclick="event.stopPropagation()"></td>` +
+                    `<td style="font-family:var(--font-mono);font-size:0.75rem;white-space:nowrap;padding:5px 10px">${c.id}</td>` +
+                    `<td id="gen-status-${c.id}" style="padding:5px 10px;white-space:nowrap">${_genBadge(st)}</td>` +
+                    `<td style="padding:5px 10px;white-space:nowrap" onclick="event.stopPropagation()"><select class="gen-voice-cell" data-cid="${c.id}" onchange="setChunkVoice('${c.id}', this.value)" style="font-size:0.78rem">${_voiceOptionsHtml(c.voice||'')}</select></td>` +
+                    `<td style="font-size:0.82rem;color:var(--text-secondary);max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 10px">${exc}</td>` +
+                `</tr>`;
+            }
+        }
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+// ── Scene / voice helpers ────────────────────────────────────────────
+
+function _chunksInScene(prefix, sceneIdx){
+    return _genChunks.filter(c => c.id.startsWith(prefix+'_') && (c.scene_index||1) === sceneIdx);
+}
+
+function selectScene(prefix, sceneIdx){
+    const ids = new Set(_chunksInScene(prefix, sceneIdx).map(c => c.id));
+    document.querySelectorAll('.gen-cb').forEach(cb => {
+        if(ids.has(cb.dataset.cid)) cb.checked = true;
+    });
+    const sa = document.getElementById('gen-select-all');
+    if(sa){
+        const all = document.querySelectorAll('.gen-cb'), chk = document.querySelectorAll('.gen-cb:checked');
+        sa.indeterminate = chk.length > 0 && chk.length < all.length;
+        sa.checked = all.length > 0 && chk.length === all.length;
+    }
+}
+
+async function setSceneVoice(prefix, sceneIdx, voice){
+    const v = voice || null;
+    const ids = _chunksInScene(prefix, sceneIdx).map(c => c.id);
+    if(!ids.length) return;
+    try{
+        await API.post(`/api/pipeline/${SLUG}/chunks/voice-bulk`, {chunk_ids: ids, voice: v});
+        for(const id of ids){
+            const c = _genChunks.find(x => x.id === id);
+            if(c) c.voice = v;
+            const sel = document.querySelector(`.gen-voice-cell[data-cid="${id}"]`);
+            if(sel) sel.value = v || '';
+        }
+        showToast(`Scene ${sceneIdx}: ${ids.length} chunks → ${v ? _voiceLabel(v) : 'default voice'}`, 'success', 2500);
+    }catch(e){ showToast(e.message, 'error'); }
+}
+
+async function setChunkVoice(chunkId, voice){
+    const v = voice || null;
+    try{
+        await API.request('PATCH', `/api/pipeline/${SLUG}/chunks/${chunkId}/voice`, {voice: v});
+        const c = _genChunks.find(x => x.id === chunkId);
+        if(c) c.voice = v;
+    }catch(e){ showToast(e.message, 'error'); }
+}
+
+async function setVoiceForSelection(forceVoice){
+    const ids = [...document.querySelectorAll('.gen-cb:checked')].map(cb => cb.dataset.cid);
+    if(!ids.length){ showToast('No chunks selected', 'error'); return; }
+    let v;
+    if(forceVoice === null){
+        v = null;
+    }else{
+        const picked = document.getElementById('gen-bulk-voice')?.value || '';
+        v = picked || null;
+    }
+    try{
+        await API.post(`/api/pipeline/${SLUG}/chunks/voice-bulk`, {chunk_ids: ids, voice: v});
+        for(const id of ids){
+            const c = _genChunks.find(x => x.id === id);
+            if(c) c.voice = v;
+            const sel = document.querySelector(`.gen-voice-cell[data-cid="${id}"]`);
+            if(sel) sel.value = v || '';
+        }
+        showToast(`${ids.length} chunks → ${v ? _voiceLabel(v) : 'default voice'}`, 'success', 2500);
+        // Re-render so scene-header voice picker reflects updated state
+        genRenderChunks();
+    }catch(e){ showToast(e.message, 'error'); }
+}
+
+function genToggleChapter(prefix){
+    if(_genCollapsed.has(prefix)) _genCollapsed.delete(prefix);
+    else _genCollapsed.add(prefix);
+    genRenderChunks();
+}
+
+function genRowClick(e, cid){
+    const cb = document.querySelector(`.gen-cb[data-cid="${cid}"]`);
+    if(cb) cb.checked = !cb.checked;
+}
+
+function genToggleAll(checked){
+    document.querySelectorAll('.gen-cb').forEach(cb=>cb.checked=checked);
+}
+
+function genSelectMode(mode){
+    document.querySelectorAll('.gen-cb').forEach(cb=>{
+        const c = _genChunks.find(x=>x.id===cb.dataset.cid);
+        if(!c){ cb.checked=false; return; }
+        const st = _chunkGenStatus(c);
+        if(mode==='all')     cb.checked = true;
+        else if(mode==='none')    cb.checked = false;
+        else if(mode==='pending') cb.checked = (st==='pending'||st==='error');
+        else if(mode==='failed')  cb.checked = (st==='fail'||st==='flagged'||st==='error');
+    });
+    const all=document.querySelectorAll('.gen-cb'), chk=document.querySelectorAll('.gen-cb:checked');
+    const sa=document.getElementById('gen-select-all');
+    if(sa){ sa.indeterminate=chk.length>0&&chk.length<all.length; sa.checked=all.length>0&&chk.length===all.length; }
+}
+
+function genUpdateRow(cid, status){
+    const cell = document.getElementById(`gen-status-${cid}`);
+    if(cell) cell.innerHTML = _genBadge(status);
+}
+
+// Listen for per-chunk lifecycle events emitted by the task panel poller
+// (see api.js → monitorTaskPanel) and update each row's badge live so the
+// user doesn't have to refresh to see "generated" / "error" after a chunk
+// finishes.
+window.addEventListener('chunk-start', (ev) => {
+    const cid = ev.detail && ev.detail.chunk_id;
+    if(cid) genUpdateRow(cid, 'generating');
+});
+window.addEventListener('chunk-done', (ev) => {
+    const cid = ev.detail && ev.detail.chunk_id;
+    if(!cid) return;
+    genUpdateRow(cid, 'audio');
+    // Keep _genChunks in sync so collapsed-chapter counters and later
+    // genSelectMode() calls reflect the new state without a full refetch.
+    const c = _genChunks.find(x => x.id === cid);
+    if(c){
+        c.has_audio = true;
+        c.generation = c.generation || {};
+        c.generation.status = 'ok';
+    }
+});
+window.addEventListener('chunk-error', (ev) => {
+    const cid = ev.detail && ev.detail.chunk_id;
+    if(!cid) return;
+    genUpdateRow(cid, 'error');
+    const c = _genChunks.find(x => x.id === cid);
+    if(c){
+        c.has_audio = false;
+        c.generation = c.generation || {};
+        c.generation.status = 'error';
+    }
+});
+
 async function startGen(){
+    const checked = [...document.querySelectorAll('.gen-cb:checked')].map(cb=>cb.dataset.cid);
+    if(!checked.length){ showToast('No chunks selected — use the Select buttons above','error'); return; }
     const p = document.getElementById('gen-progress');
-    const btn = document.getElementById('gen-start-btn');
-    btn.disabled = true;
+    const startBtn = document.getElementById('gen-start-btn');
+    if(startBtn) startBtn.disabled = true;
+    p.innerHTML = `<span class="text-muted">${checked.length} chunk${checked.length!==1?'s':''} queued…</span>`;
     const voice = document.getElementById('gen-voice').value;
     try{
-        // reflect selection in UI immediately
         projectInfo = projectInfo || {};
         projectInfo.voice = voice;
-
-        await API.post(`/api/pipeline/${SLUG}/generate`,{voice: voice, max_retries:+document.getElementById('gen-retries').value});
-        await API.pollTask(SLUG,'generate', d => {
-            const pct = d.total ? Math.round(d.current/d.total*100) : 0;
-            p.innerHTML = `<div class="flex justify-between text-muted mb-sm" style="font-size:0.85rem"><span>${d.current||0}/${d.total||'?'}</span><span>${pct}%</span></div>` + renderProgressBar(d.current||0,d.total||1).outerHTML;
-            if(d.last_result) p.innerHTML += `<div class="text-faint mt-sm" style="font-size:0.85rem">Last: ${d.last_result.chunk_id || ''} ${d.last_result.status||''}</div>`;
-            if(d.status === 'done') p.innerHTML += `<div class="mt-md"><span class="badge badge-success">${d.ok||0} ok</span> <span class="badge badge-error">${d.errors||0} err</span></div>`;
+        const genRes = await API.post(`/api/pipeline/${SLUG}/generate`,{voice, chunk_ids: checked});
+        if(!genRes || !genRes.task_id) throw new Error('Server did not return a task ID');
+        p.innerHTML = `<span class="text-muted">${checked.length} chunk${checked.length!==1?'s':''} queued — progress shown in the panel at bottom-right</span>`;
+        try{ monitorTaskPanel(genRes.task_id, 'Generate Audio'); }catch(err){ console.warn('monitorTaskPanel unavailable:', err); }
+        window.addEventListener('bg-task-update', async function _genDone(ev){
+            if(ev.detail.taskId !== genRes.task_id) return;
+            if(ev.detail.data.status !== 'done' && ev.detail.data.status !== 'error') return;
+            window.removeEventListener('bg-task-update', _genDone);
+            const d = ev.detail.data;
+            if(d.status==='done') p.innerHTML = `<span class="badge badge-success">${d.ok||0} ok</span><span class="badge badge-error" style="margin-left:6px">${d.errors||0} err</span>`;
+            else p.innerHTML = `<span class="badge badge-error">Task error</span>`;
+            if(startBtn) startBtn.disabled = false;
+            _genChunks = await API.get(`/api/audio/${SLUG}/review`).catch(()=>_genChunks);
+            genRenderChunks();
+            genSelectMode('failed');
         });
-        showToast('Done','success');
     }catch(e){
         p.innerHTML = `<span class="badge badge-error">${e.message}</span>`;
+        if(startBtn) startBtn.disabled = false;
     }
-    btn.disabled = false;
 }
 
 async function pauseGen(taskName='generate'){
-    try{await API.post(`/api/pipeline/${SLUG}/task/${taskName}/pause`);showToast('Paused','info');}catch(e){showToast(e.message,'error');}
+    try{
+        await API.post(`/api/pipeline/${SLUG}/task/${taskName}/pause`);
+        showToast('Paused — will suspend after the current chunk. Click Resume to continue.','info');
+    }catch(e){showToast(e.message,'error');}
 }
 
 async function resumeGen(taskName='generate'){
@@ -702,47 +1221,28 @@ async function resumeGen(taskName='generate'){
 }
 
 async function stopGen(taskName='generate'){
-    if(!confirm('Stop the task? This will request a graceful stop.')) return;
-    try{await API.post(`/api/pipeline/${SLUG}/task/${taskName}/stop`);showToast('Stop requested','info');}catch(e){showToast(e.message,'error');}
+    if(!confirm('Stop after the current chunk? The task will end and cannot be resumed — run again to continue generating.')) return;
+    try{await API.post(`/api/pipeline/${SLUG}/task/${taskName}/stop`);showToast('Stop requested — will finish this chunk then end','info');}catch(e){showToast(e.message,'error');}
 }
 
-async function startGenTest(){
-    const p = document.getElementById('gen-test-progress');
-    p.innerHTML = '<span class="text-muted">Starting test...</span>';
-    const voice = document.getElementById('gen-voice').value;
-    const sample = +document.getElementById('gen-test-sample').value || 5;
-    const cycles = +document.getElementById('gen-test-cycles').value || 3;
+/* ═══ QA (integrated into Review step) ═══ */
+async function startReviewQA(){
     try{
-        await API.post(`/api/pipeline/${SLUG}/generate_test`,{voice:voice,sample_size:sample,max_cycles:cycles});
-        await API.pollTask(SLUG,'generate_test', d => {
-            let html = '';
-            if(d.phase) html += `<div class="text-faint">Phase: ${d.phase} — cycle ${d.cycle||''}</div>`;
-            if(d.current !== undefined) html += `<div style="font-size:0.9rem">${d.current}/${d.total}</div>`;
-            if(d.passed !== undefined || d.failed !== undefined) html += `<div class="mt-sm"><span class="badge badge-success">${d.passed||0} pass</span> <span class="badge badge-error" style="margin-left:8px">${d.failed||0} fail</span></div>`;
-            if(d.status==='done'){
-                html += `<div class="mt-sm"><strong>Cycles:</strong></div>`;
-                for(const c of d.cycles||[]) html += `<div class="text-faint" style="font-size:0.9rem">Cycle ${c.cycle}: ${c.passed}/${c.total} pass</div>`;
-            }
-            p.innerHTML = html;
-        });
-        showToast('Test complete','success');
-    }catch(e){ p.innerHTML = `<span class="badge badge-error">${e.message}</span>`; }
-}
-
-/* ═══ QA ═══ */
-async function startQA(){
-    const p = document.getElementById('qa-progress');
-    try{
-        await API.post(`/api/pipeline/${SLUG}/qa`,{min_similarity:+document.getElementById('qa-threshold').value});
-        await API.pollTask(SLUG,'qa', d => {
-            const pct = d.total ? Math.round(d.current/d.total*100) : 0;
-            let html = `<div class="flex justify-between text-muted mb-sm" style="font-size:0.85rem"><span>${d.current||0}/${d.total||'?'}</span><span>${pct}%</span></div>` + renderProgressBar(d.current||0,d.total||1).outerHTML;
-            if(d.last_result) html += `<div class="text-faint mt-sm" style="font-size:0.85rem">Last: ${d.last_result.chunk_id||''} — ${d.last_result.qa_status||''} (${d.last_result.score||''})</div>`;
-            if(d.status === 'done') html += `<div class="mt-md"><span class="badge badge-success">${d.passed||0} pass</span> <span class="badge badge-error" style="margin-left:8px">${d.failed||0} fail</span></div>`;
-            p.innerHTML = html;
-        });
-        showToast('QA done','success');
-    }catch(e){ p.innerHTML = `<span class="badge badge-error">${e.message}</span>`; }
+        const threshold = +document.getElementById('rv-qa-threshold').value || 0.85;
+        const qaRes = await API.post(`/api/pipeline/${SLUG}/qa`,{min_similarity: threshold, mode: 'new'});
+        if(qaRes && qaRes.task_id){
+            try{ monitorTaskPanel(qaRes.task_id, 'QA Check'); }catch(_){ }
+            const handler = async (ev) => {
+                if(ev.detail.taskId === qaRes.task_id && ev.detail.data.status === 'done'){
+                    window.removeEventListener('bg-task-update', handler);
+                    if(player) await player.init();
+                    renderRvChunks();
+                }
+            };
+            window.addEventListener('bg-task-update', handler);
+        }
+        showToast('QA started — results appear in bottom-right panel','info');
+    }catch(e){ showToast(e.message,'error'); }
 }
 
 /* ═══ Review ═══ */
@@ -778,9 +1278,17 @@ function renderRvChunks(){
         bl.appendChild(el('span',{class:'chunk-id-label'},c.id));
         const tx=el('div',{class:'reading-text',style:'padding-right:100px;'});tx.textContent=c.original_text||'';bl.appendChild(tx);
         const row=el('div',{class:'flex items-center gap-sm mt-sm'});
-        if(c.has_audio){if(c.qa?.status==='pass')row.appendChild(el('span',{class:'badge badge-success'},'pass'));else if(c.qa?.status==='fail')row.appendChild(el('span',{class:'badge badge-error'},'fail'));else row.appendChild(el('span',{class:'badge badge-info'},'audio'));}else row.appendChild(el('span',{class:'badge badge-warning'},'pending'));
+        // Show generating badge if this chunk is currently being generated
+        window.__generatingChunks = window.__generatingChunks || new Set();
+        if (window.__generatingChunks.has(c.id)) {
+            row.appendChild(el('span',{class:'badge badge-info'},'generating'));
+        } else if(c.has_audio){
+            if(c.qa?.status==='pass') row.appendChild(el('span',{class:'badge badge-success'},'pass'));
+            else if(c.qa?.status==='fail') row.appendChild(el('span',{class:'badge badge-error'},'fail'));
+            else row.appendChild(el('span',{class:'badge badge-info'},'audio'));
+        } else row.appendChild(el('span',{class:'badge badge-warning'},'pending'));
         if(c.flags?.length)for(const f of c.flags)row.appendChild(el('span',{class:'badge badge-error'},f.flag_type));
-        row.appendChild(el('div',{style:'margin-left:auto;display:flex;gap:4px;'},el('button',{class:'btn btn-ghost btn-small',onClick:()=>openFlag(c.id)},'⚑'),el('button',{class:'btn btn-ghost btn-small',onClick:()=>openOv(c.id)},'✎'),c.has_audio?el('button',{class:'btn btn-ghost btn-small',onClick:()=>regenChunk(c.id)},'↻'):null));
+        row.appendChild(el('div',{style:'margin-left:auto;display:flex;gap:4px;'},el('button',{class:'btn btn-ghost btn-small',onClick:()=>openFlag(c.id)},'⚑'),el('button',{class:'btn btn-ghost btn-small',title:'Edit chunk text',onClick:()=>openChunkEdit(c.id)},'✎'),c.has_audio?el('button',{class:'btn btn-ghost btn-small',onClick:()=>regenChunk(c.id)},'↻'):null));
         bl.appendChild(row);p.appendChild(bl);
         if(c.scene_break_after)p.appendChild(el('div',{class:'scene-break-marker'},'· · ·'));
         if(c.chapter_break_after)p.appendChild(el('div',{class:'scene-break-marker',style:'font-size:1.2rem;padding:var(--space-lg) 0'},'— — —'));
@@ -793,13 +1301,88 @@ let flagCid=null,flagType=null;
 function openFlag(cid){flagCid=cid;flagType=null;document.getElementById('flag-chunk-label').textContent=cid;const o=document.getElementById('flag-options');o.innerHTML='';for(const t of['garbled','missing','repetition','added_words','pronunciation','other'])o.appendChild(el('span',{class:'flag-option',onClick:e=>{o.querySelectorAll('.flag-option').forEach(x=>x.classList.remove('selected'));e.target.classList.add('selected');flagType=t;}},t));document.getElementById('flag-notes').value='';document.getElementById('flag-range').value='';openModal('flag-modal');}
 async function submitFlag(){if(!flagType){showToast('Select type','error');return;}await API.post(`/api/audio/${SLUG}/review/flag`,{chunk_id:flagCid,flag_type:flagType,notes:document.getElementById('flag-notes').value,word_range:document.getElementById('flag-range').value||null});closeModal('flag-modal');showToast('Flagged','success');await player.init();renderRvChunks();}
 
-/* ═══ Override ═══ */
-function openOv(cid){document.getElementById('ov-chunk-id').value=cid;document.getElementById('ov-word').value='';document.getElementById('ov-phonetic').value='';openModal('override-modal');}
-async function submitOverride(){const w=document.getElementById('ov-word').value.trim(),ph=document.getElementById('ov-phonetic').value.trim(),cid=document.getElementById('ov-chunk-id').value;if(!w||!ph){showToast('Fill both','error');return;}await API.post(`/api/audio/${SLUG}/review/location-override`,{word:w,phonetic:ph,chunk_id:cid});closeModal('override-modal');showToast(`${w}→${ph}`,'success');}
-async function regenChunk(cid){try{await API.post(`/api/pipeline/${SLUG}/generate`,{chunk_ids:[cid],max_retries:3});showToast('Regenerating...','success');setTimeout(async()=>{await player.init();renderRvChunks();},5000);}catch(e){showToast(e.message,'error');}}
+/* ═══ Edit Chunk TTS Text ═══ */
+let _editChunkId = null;
+function openChunkEdit(cid){
+    const chunk = player?.chunks?.find(c=>c.id===cid);
+    if(!chunk){ showToast('Chunk not found','error'); return; }
+    _editChunkId = cid;
+    document.getElementById('edit-chunk-id-label').textContent = cid;
+    // Prefill with effective TTS text: pron_text > tagged_text > original_text
+    const effective = chunk.pron_text || chunk.tagged_text || chunk.original_text || '';
+    document.getElementById('edit-chunk-text').value = effective;
+    openModal('edit-chunk-modal');
+    setTimeout(()=>document.getElementById('edit-chunk-text').focus(), 80);
+}
+async function saveChunkEdit(){
+    const text = document.getElementById('edit-chunk-text').value.trim();
+    if(!text){ showToast('Text cannot be empty','error'); return; }
+    try{
+        await API.patch(`/api/audio/${SLUG}/chunk/${_editChunkId}`, {text});
+        closeModal('edit-chunk-modal');
+        showToast('Saved — use ↻ to regenerate audio','info');
+        if(player) await player.init();
+        renderRvChunks();
+    }catch(e){ showToast(e.message,'error'); }
+}
+async function clearChunkEdit(){
+    if(!confirm('Remove the TTS override for this chunk? It will revert to automatic pronunciation text.')) return;
+    try{
+        await API.patch(`/api/audio/${SLUG}/chunk/${_editChunkId}`, {text:''});
+        closeModal('edit-chunk-modal');
+        showToast('Override cleared','success');
+        if(player) await player.init();
+        renderRvChunks();
+    }catch(e){ showToast(e.message,'error'); }
+}
+
+async function regenChunk(cid){
+    try{
+        const res = await API.post(`/api/pipeline/${SLUG}/generate`,{chunk_ids:[cid]});
+        if(res && res.task_id){ try{ monitorTaskPanel(res.task_id, 'Regenerate chunk'); }catch(_){ } }
+        showToast('Regenerating...','success');
+        setTimeout(async()=>{ await player.init(); renderRvChunks(); },5000);
+    }catch(e){ showToast(e.message,'error'); }
+}
 
 /* ═══ Export ═══ */
-async function doExport(){const s=document.getElementById('export-status');s.innerHTML='<span class="text-muted">Exporting...</span>';try{const r=await API.post(`/api/pipeline/${SLUG}/export`,{scope:document.getElementById('export-scope').value});s.innerHTML=r.file?`<span class="badge badge-success">${r.file}</span>`:`<span class="badge badge-success">${r.files.length} files</span>`;showToast('Done','success');}catch(e){s.innerHTML=`<span class="badge badge-error">${e.message}</span>`;}}
+async function doExport(){
+    const s = document.getElementById('export-status');
+    s.innerHTML = '<span class="text-muted">Exporting...</span>';
+    try{
+        const r = await API.post(`/api/pipeline/${SLUG}/export`, {scope: document.getElementById('export-scope').value});
+        const fileLine = r.file
+            ? `<span class="badge badge-success">${r.file}</span>`
+            : `<span class="badge badge-success">${(r.files||[]).length} files</span>`;
+        const total = r.total_seams || 0;
+        const flagged = r.flagged_seams || 0;
+        let seamLine = '';
+        if(total){
+            const cls = flagged ? 'badge-warning' : 'badge-info';
+            const label = flagged
+                ? `${flagged} seam${flagged===1?'':'s'} flagged of ${total}`
+                : `${total} seams clean`;
+            seamLine = ` <span class="badge ${cls}" style="margin-left:6px;cursor:${flagged?'pointer':'default'}" ${flagged?'onclick="toggleSeamReport()"':''}>${label}</span>`;
+        }
+        let detailsHtml = '';
+        if(flagged && r.flagged && r.flagged.length){
+            const rows = r.flagged.map(seam => {
+                const warns = (seam.warnings || []).map(w => `<li>${escapeHtml(w)}</li>`).join('');
+                return `<tr><td style="font-family:var(--font-mono);font-size:0.78rem;white-space:nowrap;padding:4px 10px">${seam.prev_chunk_id} → ${seam.curr_chunk_id}</td><td style="padding:4px 10px"><ul style="margin:0;padding-left:18px">${warns}</ul></td></tr>`;
+            }).join('');
+            detailsHtml = `<div id="seam-report" class="card mt-md" style="display:none;padding:0"><table class="data-table" style="width:100%"><thead><tr><th style="white-space:nowrap">Seam</th><th>Issues</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        }
+        s.innerHTML = fileLine + seamLine + detailsHtml;
+        showToast(flagged ? `Done (${flagged} seams to review)` : 'Done', flagged ? 'info' : 'success');
+    }catch(e){
+        s.innerHTML = `<span class="badge badge-error">${e.message}</span>`;
+    }
+}
+
+function toggleSeamReport(){
+    const el = document.getElementById('seam-report');
+    if(el) el.style.display = (el.style.display === 'none') ? '' : 'none';
+}
 
 /* ═══ Keyboard ═══ */
 document.addEventListener('keydown',e=>{if(currentStep!=='review'||e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;switch(e.code){case'Space':e.preventDefault();player?.togglePlay();break;case'ArrowRight':e.preventDefault();player?.next();break;case'ArrowLeft':e.preventDefault();player?.prev();break;case'BracketRight':e.preventDefault();player?.jumpToNextScene();break;case'BracketLeft':e.preventDefault();player?.jumpToPrevScene();break;}});
@@ -837,6 +1420,46 @@ async function saveSettings(){
     }catch(e){
         showToast('Invalid JSON: ' + e.message,'error');
     }
+}
+
+// Live chunk-level event handlers
+window.__generatingChunks = window.__generatingChunks || new Set();
+window.addEventListener('chunk-start', (ev) => {
+    try{
+        const cid = ev.detail.chunk_id;
+        window.__generatingChunks.add(cid);
+        if(currentStep === 'generate') genUpdateRow(cid, 'generating');
+        if(currentStep === 'review') renderRvChunks();
+    }catch(_){ }
+});
+
+window.addEventListener('chunk-done', (ev) => {
+    try{
+        const cid = ev.detail.chunk_id;
+        window.__generatingChunks.delete(cid);
+        if(currentStep === 'generate') genUpdateRow(cid, 'audio');
+        if(currentStep === 'review'){
+            (async ()=>{ if(player) await player.init(); renderRvChunks(); })();
+        }
+    }catch(_){ }
+});
+
+window.addEventListener('chunk-error', (ev) => {
+    try{
+        const cid = ev.detail.chunk_id;
+        window.__generatingChunks.delete(cid);
+        if(currentStep === 'generate') genUpdateRow(cid, 'error');
+        if(currentStep === 'review') renderRvChunks();
+        showToast(`Generation failed: ${cid}`,'error');
+    }catch(_){ }
+});
+
+async function shutdownApp(){
+    if(!confirm('Shut down the Audiobook Studio server?')) return;
+    try{
+        await API.post('/api/system/shutdown');
+        document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#888;font-size:1.1rem;">Server stopped. You can close this tab.</div>';
+    }catch(_){ }
 }
 
 init();

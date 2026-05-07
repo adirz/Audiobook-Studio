@@ -41,11 +41,21 @@ def generate_chunk(tts: TTSHandler, db: ProjectDB,
                    chunk: dict, voice: str,
                    audio_dir: Path,
                    params: dict | None = None,
-                   attempt: int | None = None) -> dict:
+                   attempt: int | None = None,
+                   stop_check=None) -> dict:
     """Generate audio for a single chunk.
 
     Returns a result dict with status, duration, paths, etc.
+
+    A per-chunk ``voice`` override on the chunk row takes precedence over
+    the ``voice`` argument; this is how scene-level voice assignments
+    (set in the Generate Audio UI) get applied without making the caller
+    track them.
     """
+    chunk_voice = chunk.get("voice")
+    if chunk_voice:
+        voice = chunk_voice
+
     if attempt is None:
         # Find next attempt number
         existing = db.get_generations(chunk_id=chunk["id"])
@@ -62,6 +72,18 @@ def generate_chunk(tts: TTSHandler, db: ProjectDB,
 
     text = prepare_chunk_text(db, chunk)
     wav_path = audio_dir / f"{chunk['id']}_v{attempt:02d}.wav"
+
+    # Allow an external stop check to abort before starting heavy work
+    if stop_check and stop_check():
+        db.update_generation(gen_id,
+                             status="stopped",
+                             error_msg="stopped")
+        return {
+            "gen_id": gen_id,
+            "chunk_id": chunk["id"],
+            "status": "stopped",
+            "attempt": attempt,
+        }
 
     start = time.time()
     try:
@@ -113,7 +135,8 @@ def generate_with_retry(tts: TTSHandler, db: ProjectDB,
                         chunk: dict, voice: str,
                         audio_dir: Path,
                         max_retries: int = 3,
-                        base_params: dict | None = None) -> dict:
+                        base_params: dict | None = None,
+                        stop_check=None) -> dict:
     """Generate audio for a chunk with automatic retries on failure.
 
     Each retry varies parameters slightly:
@@ -123,6 +146,9 @@ def generate_with_retry(tts: TTSHandler, db: ProjectDB,
     params = dict(base_params or {})
 
     for attempt in range(1, max_retries + 1):
+        # Check for requested stop between attempts
+        if stop_check and stop_check():
+            return {"chunk_id": chunk["id"], "status": "stopped", "attempt": attempt}
         if attempt == 2:
             params["temperature"] = params.get("temperature", 0.7) + 0.1
         elif attempt >= 3:
@@ -130,7 +156,8 @@ def generate_with_retry(tts: TTSHandler, db: ProjectDB,
             params["max_tokens"] = max(2000, params.get("max_tokens", 8000) - 2000)
 
         result = generate_chunk(tts, db, chunk, voice, audio_dir,
-                                params=params, attempt=attempt)
+                    params=params, attempt=attempt,
+                    stop_check=stop_check)
 
         if result["status"] == "ok":
             return result
@@ -179,10 +206,19 @@ def generate_batch(tts: TTSHandler, db: ProjectDB,
         if stop_check and stop_check():
             break
 
+        # Notify caller which chunk we're about to generate so UIs can
+        # display a "currently generating" indicator.
+        if progress_callback:
+            try:
+                progress_callback(i + 1, total, {"status": "starting", "chunk_id": chunk["id"]})
+            except Exception:
+                pass
+
         result = generate_with_retry(
             tts, db, chunk, voice, audio_dir,
             max_retries=max_retries,
             base_params=params,
+            stop_check=stop_check,
         )
         results.append(result)
 

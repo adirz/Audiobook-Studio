@@ -113,6 +113,22 @@ def get_review_data(slug: str, chapter_id: int = None):
     else:
         chunks = db.get_chunks()
 
+    # Compute a scene index per chunk on the fly. The scene resets at
+    # chapter boundaries and increments at every chunk whose
+    # ``scene_break_after`` is set. Scene 1 covers everything before the
+    # first scene break inside a chapter — i.e. the "default" / "other"
+    # bucket the UI surfaces.
+    scene_by_chunk: dict[str, int] = {}
+    current_chapter = None
+    current_scene = 1
+    for ch in chunks:
+        if ch.get("chapter_id") != current_chapter:
+            current_chapter = ch.get("chapter_id")
+            current_scene = 1
+        scene_by_chunk[ch["id"]] = current_scene
+        if ch.get("scene_break_after"):
+            current_scene += 1
+
     enriched = []
     for ch in chunks:
         gen = db.get_latest_generation(ch["id"])
@@ -136,6 +152,7 @@ def get_review_data(slug: str, chapter_id: int = None):
             "flags": flags,
             "has_audio": bool(gen and gen["status"] == "ok"),
             "audio_url": f"/api/audio/{slug}/chunk/{ch['id']}" if gen and gen["status"] == "ok" else None,
+            "scene_index": scene_by_chunk.get(ch["id"], 1),
         })
 
     return enriched
@@ -211,6 +228,26 @@ def get_all_flags(slug: str, resolved: bool = None):
     """Get all flags, optionally filtered."""
     db = get_project_db(slug)
     return db.get_flags(resolved=resolved)
+
+
+# ─── Chunk text editing ───────────────────────────────────────────────
+
+@router.patch("/{slug}/chunk/{chunk_id}")
+def edit_chunk_tts_text(slug: str, chunk_id: str, payload: dict):
+    """Override the text sent to TTS for this chunk.
+
+    Saves the user's edit as pron_text (highest priority in prepare_chunk_text).
+    original_text is never modified — it stays as the manuscript source.
+    Pass text=null/empty to clear the override and revert to automatic text.
+    """
+    db = get_project_db(slug)
+    chunk = db.get_chunk(chunk_id)
+    if not chunk:
+        raise HTTPException(404, "Chunk not found")
+    text = (payload.get("text") or "").strip() or None
+    db.execute("UPDATE chunks SET pron_text=? WHERE id=?", (text, chunk_id))
+    db.commit()
+    return {"status": "updated", "chunk_id": chunk_id, "cleared": text is None}
 
 
 # ─── Location overrides (from review, step 13) ────────────────────────

@@ -148,6 +148,25 @@ class ProjectDB:
 
     def _init_schema(self):
         self.conn.executescript(SCHEMA_SQL)
+        # Migrate: add is_title_chunk column to existing databases
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(chunks)").fetchall()]
+        if "is_title_chunk" not in cols:
+            self.conn.execute(
+                "ALTER TABLE chunks ADD COLUMN is_title_chunk INTEGER DEFAULT 0"
+            )
+        # Migrate: add narration_title to chapters. NULL = use auto default
+        # (derived from the chapter title), empty string = no narration.
+        ch_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(chapters)").fetchall()]
+        if "narration_title" not in ch_cols:
+            self.conn.execute(
+                "ALTER TABLE chapters ADD COLUMN narration_title TEXT"
+            )
+        # Migrate: add per-chunk voice override. NULL = use the voice
+        # supplied at generate-time (the request's default).
+        if "voice" not in cols:
+            self.conn.execute(
+                "ALTER TABLE chunks ADD COLUMN voice TEXT"
+            )
         # Set schema version if new
         existing = self.get_meta("schema_version")
         if existing is None:
@@ -211,6 +230,19 @@ class ProjectDB:
         )
         self.commit()
 
+    def update_chapter_narration_title(self, chapter_id: int, narration_title):
+        """Set the narration title used for the chapter's title audio chunk.
+
+        ``None`` means "use the auto default" (derived from the title).
+        Empty string means "do not narrate this chapter's title" — no
+        title chunk will be created.
+        """
+        self.execute(
+            "UPDATE chapters SET narration_title=? WHERE id=?",
+            (narration_title, chapter_id),
+        )
+        self.commit()
+
     # -- Symbol operations --
 
     def insert_symbols(self, symbols: list[dict]):
@@ -242,19 +274,20 @@ class ProjectDB:
         # already exists. This makes chunking idempotent / re-runnable
         # without raising UNIQUE constraint errors when chunk IDs collide.
         for c in chunks:
+            is_title = int(bool(c.get("is_title_chunk", 0)))
             vals = (
                 c["id"], c["chapter_id"], c["local_index"], c["global_index"],
                 c["original_text"], c.get("cleaned_text"),
                 c["word_count"], c.get("scene_break_after", 0),
-                c.get("chapter_break_after", 0),
+                c.get("chapter_break_after", 0), is_title,
             )
             try:
                 self.execute(
                     """INSERT INTO chunks
                        (id, chapter_id, local_index, global_index,
                         original_text, cleaned_text, word_count,
-                        scene_break_after, chapter_break_after)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        scene_break_after, chapter_break_after, is_title_chunk)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     vals,
                 )
             except sqlite3.IntegrityError:
@@ -263,24 +296,28 @@ class ProjectDB:
                     """UPDATE chunks SET
                        chapter_id=?, local_index=?, global_index=?,
                        original_text=?, cleaned_text=?, word_count=?,
-                       scene_break_after=?, chapter_break_after=?
+                       scene_break_after=?, chapter_break_after=?, is_title_chunk=?
                        WHERE id=?""",
                     (
                         c["chapter_id"], c["local_index"], c["global_index"],
                         c["original_text"], c.get("cleaned_text"),
                         c["word_count"], c.get("scene_break_after", 0),
-                        c.get("chapter_break_after", 0), c["id"],
+                        c.get("chapter_break_after", 0), is_title, c["id"],
                     ),
                 )
         self.commit()
 
     def get_chunks(self, chapter_id: int | None = None) -> list[dict]:
+        # Tiebreaker on local_index: title chunks (local_index=-1) inserted
+        # by /title-chunks/refresh share the global_index of the first
+        # content chunk in their chapter, so the secondary sort puts the
+        # title before the body where it belongs.
         if chapter_id is not None:
             return self.fetchall(
-                "SELECT * FROM chunks WHERE chapter_id=? ORDER BY global_index",
+                "SELECT * FROM chunks WHERE chapter_id=? ORDER BY global_index, local_index",
                 (chapter_id,),
             )
-        return self.fetchall("SELECT * FROM chunks ORDER BY global_index")
+        return self.fetchall("SELECT * FROM chunks ORDER BY global_index, local_index")
 
     def get_chunk(self, chunk_id: str) -> dict | None:
         return self.fetchone("SELECT * FROM chunks WHERE id=?", (chunk_id,))
@@ -298,6 +335,25 @@ class ProjectDB:
             (pron_text, chunk_id),
         )
         self.commit()
+
+    def update_chunk_voice(self, chunk_id: str, voice):
+        """Set per-chunk voice override. Pass None to clear the override."""
+        self.execute(
+            "UPDATE chunks SET voice=? WHERE id=?",
+            (voice, chunk_id),
+        )
+        self.commit()
+
+    def bulk_update_chunk_voice(self, chunk_ids: list[str], voice):
+        """Set the same voice override on many chunks at once."""
+        if not chunk_ids:
+            return 0
+        self.executemany(
+            "UPDATE chunks SET voice=? WHERE id=?",
+            [(voice, cid) for cid in chunk_ids],
+        )
+        self.commit()
+        return len(chunk_ids)
 
     # -- Pronunciation operations --
 
@@ -396,11 +452,32 @@ class ProjectDB:
         self.commit()
 
     def get_latest_generation(self, chunk_id: str) -> dict | None:
+        # Tiebreaker on id DESC: if two rows share the same attempt number
+        # (can happen after an interrupted run that's been retried), the
+        # most recently inserted row always wins.
         return self.fetchone(
             """SELECT * FROM generations
-               WHERE chunk_id=? ORDER BY attempt DESC LIMIT 1""",
+               WHERE chunk_id=? ORDER BY attempt DESC, id DESC LIMIT 1""",
             (chunk_id,),
         )
+
+    def reset_stale_generations(self) -> int:
+        """Mark any 'generating' or 'pending' rows as 'error'.
+
+        Call this only when no generation task is running for this project
+        (e.g. at server startup). Such rows are leftovers from an
+        interrupted run and would otherwise hide the chunk from selection
+        / re-generation flows.
+
+        Returns the number of rows updated.
+        """
+        cur = self.execute(
+            """UPDATE generations
+               SET status='error', error_msg='interrupted (server restart)'
+               WHERE status IN ('generating', 'pending')"""
+        )
+        self.commit()
+        return cur.rowcount
 
     def get_generations(self, chunk_id: str = None,
                         status: str = None) -> list[dict]:

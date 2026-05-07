@@ -11,22 +11,47 @@ DEFAULT_MAX_WORDS = 150
 DEFAULT_MIN_WORDS = 30
 
 
+# Strip a leading numeric prefix like "19 ", "19. ", "19: ", "19 - " from
+# titles. Many manuscripts have chapter heading text such as
+# "19 Order of war" — when narrated as a title chunk those numbers are
+# noise (and the optional "Chapter N:" prefix already supplies the count).
+_NUM_PREFIX_RE = re.compile(r"^\s*\d+\s*[\.\:\)\-\–—]?\s+")
+
+
+def strip_leading_numbering(title: str) -> str:
+    """Remove a leading "19 " / "19. " / "19: " style prefix from a title."""
+    if not title:
+        return title
+    return _NUM_PREFIX_RE.sub("", title).strip()
+
+
+def auto_narration_title(chapter_title: str, chapter_idx: int,
+                         chapter_prefix: bool) -> str:
+    """Compute the default narrated title for a chapter.
+
+    - Strips a leading numeric prefix from the original title.
+    - Optionally prepends ``"Chapter N: "`` (1-based on chapter_idx).
+    """
+    clean = strip_leading_numbering(chapter_title or "")
+    if chapter_prefix:
+        return f"Chapter {chapter_idx + 1}: {clean}" if clean else f"Chapter {chapter_idx + 1}"
+    return clean
+
+
 def split_into_chunks(text: str, max_words: int = DEFAULT_MAX_WORDS,
                       min_words: int = DEFAULT_MIN_WORDS) -> list[dict]:
-    """Chunk text using full paragraphs as primary units with a 1-sentence overlap.
+    """Chunk text using full paragraphs as primary units. No overlap.
 
-    Rules implemented:
-    - Each chunk is composed of k full paragraphs plus one full sentence (from the
-      following paragraph) when that fits under `max_words`.
-    - k is chosen as the largest integer such that the chunk (including an optional
-      carry-in sentence from the previous chunk) does not exceed `max_words`.
-    - If adding the extra sentence would exceed `max_words` even for k=1, the
-      chunk will be the single full paragraph and the *next* chunk will start
-      with the last sentence of this paragraph (this creates the required overlap).
-    - Very long paragraphs (longer than `max_words`) are split into sentence
-      groups that each fit within `max_words`.
+    Rules:
+    - Each chunk is composed of as many consecutive full paragraphs as fit
+      under ``max_words``. Adjacent chunks share no text.
+    - Paragraphs longer than ``max_words`` are pre-split into sentence
+      groups (each fitting under ``max_words``) so the greedy packing
+      step never sees an over-budget unit.
+    - A scene-break marker always closes the current chunk; the chunk
+      immediately before the break has ``scene_break_after`` set.
 
-    Returns list of {"text": str, "scene_break_after": bool}.
+    Returns a list of ``{"text": str, "scene_break_after": bool}``.
     """
     def split_sentences(para: str) -> list[str]:
         # Split on sentence-ending punctuation followed by whitespace and a capital/quote
@@ -73,97 +98,44 @@ def split_into_chunks(text: str, max_words: int = DEFAULT_MAX_WORDS,
         # split very long paragraphs into sentence groups that each fit
         parts = split_paragraph_to_units(para, max_words)
         for part in parts:
-            sents = split_sentences(part)
             units.append({
                 "is_scene_break": False,
                 "text": part,
-                "sentences": sents,
                 "word_count": wc(part),
-                "skip_first_sentence": False,
             })
 
     chunks: list[dict] = []
     i = 0
-    carry_sentence = None  # sentence to prepend to the next chunk (for overlap)
-
     while i < len(units):
         u = units[i]
         if u.get("is_scene_break"):
-            # mark previous chunk as scene break end
             if chunks:
                 chunks[-1]["scene_break_after"] = True
             i += 1
             continue
 
-        carry_in = carry_sentence
-        carry_sentence = None
-
-        # Find largest k (number of full units/paragraphs) that fits when also
-        # including the first sentence of the following unit (for overlap)
+        # Greedy: pack as many consecutive non-break units as fit under max_words
         total = 0
         best_k = 0
         j = i
         while j < len(units) and not units[j].get("is_scene_break"):
             total += units[j]["word_count"]
-            # words in first sentence of next unit
-            next_first_words = 0
-            if j + 1 < len(units) and not units[j + 1].get("is_scene_break"):
-                nxt0 = units[j + 1]["sentences"][0] if units[j + 1]["sentences"] else ""
-                next_first_words = wc(nxt0)
-            carry_words = wc(carry_in) if carry_in else 0
-            if carry_words + total + next_first_words <= max_words:
+            if total <= max_words:
                 best_k = j - i + 1
                 j += 1
                 continue
             break
 
-        if best_k > 0:
-            end_idx = i + best_k - 1
-            # prepare chunk parts
-            parts: list[str] = []
-            if carry_in:
-                parts.append(carry_in.strip())
+        # Safety net: a single unit that still exceeds max_words shouldn't
+        # happen (split_paragraph_to_units pre-splits) but emit it whole
+        # rather than loop forever.
+        if best_k == 0:
+            best_k = 1
 
-            for idx in range(i, i + best_k):
-                unit = units[idx]
-                if unit.get("skip_first_sentence") and unit.get("sentences"):
-                    # omit the first sentence because it is carried in
-                    rem = unit["sentences"][1:]
-                    if rem:
-                        parts.append(" ".join(rem).strip())
-                else:
-                    parts.append(unit["text"])
-
-            # determine extra (first) sentence from the following unit to append
-            extra_sentence = None
-            if i + best_k < len(units) and not units[i + best_k].get("is_scene_break"):
-                extra_sentence = units[i + best_k]["sentences"][0] if units[i + best_k]["sentences"] else None
-                # ensure next unit won't repeat this sentence
-                units[i + best_k]["skip_first_sentence"] = True
-                carry_sentence = extra_sentence
-
-            if extra_sentence:
-                parts.append(extra_sentence.strip())
-
-            chunk_text = "\n".join(p for p in parts if p).strip()
-            chunks.append({"text": chunk_text, "scene_break_after": False})
-            i = i + best_k
-            continue
-
-        # best_k == 0: cannot include any k with the extra-sentence; fallback to
-        # single-unit chunk (include carry_in if present) and make the next chunk
-        # start with the last sentence of this unit (for overlap)
-        unit = units[i]
-        parts = []
-        if carry_in:
-            parts.append(carry_in.strip())
-        parts.append(unit["text"])
-        # prepare carry for next chunk as the last sentence of this unit
-        last_sent = unit["sentences"][-1] if unit.get("sentences") else None
-        carry_sentence = last_sent
-        chunk_text = "\n".join(p for p in parts if p).strip()
+        parts = [units[idx]["text"] for idx in range(i, i + best_k)]
+        chunk_text = "\n".join(parts).strip()
         chunks.append({"text": chunk_text, "scene_break_after": False})
-        i += 1
+        i += best_k
 
     return chunks
 
@@ -216,19 +188,69 @@ def _is_open_dialogue(current_text: str, next_para: str) -> bool:
     return False
 
 
+def resolve_narration_title(chapter: dict, chapter_prefix: bool) -> str:
+    """Return the title-chunk text for a chapter, or "" to skip narration.
+
+    Resolution order:
+    - ``narration_title`` is NULL → auto default (chapter title with the
+      leading numbering stripped, optionally with a "Chapter N: " prefix).
+    - ``narration_title`` is empty string → user opted out, no title chunk.
+    - Otherwise → use the explicit user value verbatim.
+    """
+    nt = chapter.get("narration_title")
+    if nt is None:
+        return auto_narration_title(chapter.get("title", ""), chapter["idx"], chapter_prefix)
+    return nt
+
+
 def chunk_all_chapters(db: ProjectDB,
                        max_words: int = DEFAULT_MAX_WORDS,
-                       min_words: int = DEFAULT_MIN_WORDS):
-    """Chunk all cleaned chapters and store results in DB."""
+                       min_words: int = DEFAULT_MIN_WORDS,
+                       narrate_titles: bool = False,
+                       chapter_prefix: bool = True):
+    """Chunk all cleaned chapters and store results in DB.
+
+    Args:
+        narrate_titles: When True, insert a title chunk at the start of each
+            chapter that doesn't have an explicit empty narration_title.
+        chapter_prefix: Used as the auto-default policy for chapters where
+            ``narration_title`` is NULL. Chapters with an explicit override
+            ignore this flag and use their own text.
+    """
     chapters = db.get_chapters()
     global_idx = 0
 
     all_chunks = []
     for ch in chapters:
         text = ch["cleaned_text"] or ch["raw_text"]
-        chunks = split_into_chunks(text, max_words, min_words)
+        content_chunks = split_into_chunks(text, max_words, min_words)
 
-        for i, chunk in enumerate(chunks):
+        # Per-chapter title chunk: honor explicit narration_title override,
+        # fall back to the auto default when narrate_titles is on.
+        title_text = ""
+        nt = ch.get("narration_title")
+        if nt is None and narrate_titles:
+            title_text = auto_narration_title(ch.get("title", ""), ch["idx"], chapter_prefix)
+        elif nt:
+            title_text = nt
+        # nt == "" → user opted out; leave title_text empty
+
+        if title_text:
+            all_chunks.append({
+                "id": f"ch{ch['idx']:03d}_title",
+                "chapter_id": ch["id"],
+                "local_index": -1,
+                "global_index": global_idx,
+                "original_text": title_text,
+                "cleaned_text": title_text,
+                "word_count": len(title_text.split()),
+                "scene_break_after": 0,
+                "chapter_break_after": 0,
+                "is_title_chunk": 1,
+            })
+            global_idx += 1
+
+        for i, chunk in enumerate(content_chunks):
             chunk_id = f"ch{ch['idx']:03d}_chunk{i:04d}"
             all_chunks.append({
                 "id": chunk_id,
@@ -239,7 +261,8 @@ def chunk_all_chapters(db: ProjectDB,
                 "cleaned_text": chunk["text"],
                 "word_count": len(chunk["text"].split()),
                 "scene_break_after": 1 if chunk["scene_break_after"] else 0,
-                "chapter_break_after": 1 if i == len(chunks) - 1 else 0,
+                "chapter_break_after": 1 if i == len(content_chunks) - 1 else 0,
+                "is_title_chunk": 0,
             })
             global_idx += 1
 

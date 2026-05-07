@@ -54,10 +54,24 @@ class ContinuousPlayer {
             return;
         }
 
+        // Ensure any currently playing audio is stopped immediately
+        try {
+            this.audio.pause();
+            this.audio.currentTime = 0;
+        } catch (e) { /* ignore */ }
+
         this.state = 'loading';
-        this.audio.src = chunk.audio_url;
-        this.audio.load();
         this.onStateChange(this.state);
+
+        // Assign new source and load. Play will start once `canplay` fires
+        // (we rely on the existing `canplay` handler to transition to playing).
+        try {
+            this.audio.src = chunk.audio_url;
+            this.audio.load();
+        } catch (e) {
+            console.error('Failed to load audio src', e);
+        }
+
         this.onChunkChange(this.currentIdx, chunk);
 
         // Preload next
@@ -88,8 +102,9 @@ class ContinuousPlayer {
     }
 
     stop() {
-        this.audio.pause();
-        this.audio.src = '';
+        try { this.audio.pause(); } catch(_){}
+        try { this.audio.currentTime = 0; } catch(_){}
+        try { this.audio.src = ''; } catch(_){}
         this.state = 'stopped';
         this.onStateChange(this.state);
     }
@@ -261,13 +276,17 @@ class ContinuousPlayer {
     _preloadNext() {
         const nextIdx = this.currentIdx + 1;
         if (nextIdx < this.chunks.length && this.chunks[nextIdx]?.has_audio) {
+            try{
+                this._preloadAudio.pause();
+            }catch(_){ }
             this._preloadAudio.src = this.chunks[nextIdx].audio_url;
-            this._preloadAudio.load();
+            try{ this._preloadAudio.load(); }catch(_){ }
         }
     }
 
     destroy() {
         this.stop();
-        this._preloadAudio.src = '';
+        try { this._preloadAudio.pause(); } catch(_){}
+        try { this._preloadAudio.src = ''; } catch(_){}
     }
 }

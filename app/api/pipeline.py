@@ -2,9 +2,11 @@
 
 import json
 import random
+import threading
+import traceback
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 
 from app.api.projects import get_project_db, get_project_dir
 from app.handlers.registry import get_tts, get_stt, get_llm, get_extractor
@@ -14,6 +16,7 @@ from app.models import (
     QAThresholds, ExportRequest, TaggingRequest,
     TaggingChatRequest, TaggingApplyRequest, TaggingSaveRequest,
     PronUpdate, PronTestRequest, GenQATestRequest,
+    ChapterNarrationUpdate, ChunkVoiceUpdate, BulkChunkVoiceUpdate,
 )
 from app.pipeline import analyze, clean, chunk, tagging, generate, qa, merge
 from app.pipeline.pron_buffer import get_or_create_buffer
@@ -23,6 +26,42 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 # In-memory progress tracking for long-running tasks
 _task_progress: dict[str, dict] = {}
 _task_controls: dict[str, dict] = {}
+# Dedicated worker threads keyed by task_id. Long-running jobs run here
+# so they don't compete with FastAPI's request-handling threadpool.
+_task_threads: dict[str, threading.Thread] = {}
+
+
+def _run_in_dedicated_thread(task_id: str, func) -> bool:
+    """Run a long-running job in its own daemon thread.
+
+    Returns False if a thread for this task is already running (caller
+    should treat that as "task already in progress"). Returns True if a
+    new thread was started.
+
+    Using a dedicated thread (instead of FastAPI's BackgroundTasks, which
+    runs sync functions in the shared request threadpool) keeps the HTTP
+    server responsive even during multi-hour TTS / QA / tagging runs.
+    """
+    existing = _task_threads.get(task_id)
+    if existing and existing.is_alive():
+        return False
+
+    def wrapper():
+        try:
+            func()
+        except Exception as e:
+            traceback.print_exc()
+            _task_progress[task_id] = {
+                "status": "error",
+                "message": f"Task crashed: {e}",
+            }
+
+    thread = threading.Thread(
+        target=wrapper, name=f"task-{task_id}", daemon=True
+    )
+    _task_threads[task_id] = thread
+    thread.start()
+    return True
 
 
 # ─── Step 2: Heading scan & range selection ────────────────────────────
@@ -128,11 +167,141 @@ def clean_text(slug: str):
 
 
 @router.post("/{slug}/chunk")
-def chunk_text(slug: str, max_words: int = 150, min_words: int = 30):
-    """Chunk all chapters."""
+def chunk_text(slug: str, max_words: int = 150, min_words: int = 30,
+               narrate_titles: bool = False, chapter_prefix: bool = True):
+    """Chunk all chapters, optionally inserting a narrated title chunk per chapter."""
     db = get_project_db(slug)
-    count = chunk.chunk_all_chapters(db, max_words, min_words)
+    count = chunk.chunk_all_chapters(db, max_words, min_words, narrate_titles, chapter_prefix)
     return {"chunks_created": count}
+
+
+# ─── Chapter narration titles (for the title-chunk editor) ────────────
+
+@router.get("/{slug}/chapters")
+def list_chapters_with_narration(slug: str, chapter_prefix: bool = True):
+    """List chapters with their auto-default and explicit narration title.
+
+    Returned per chapter:
+      - id, idx, title (the original heading)
+      - narration_title (the explicit override, or null if unset)
+      - auto_title (what the engine would use if narration_title is null
+        and global narrate_titles is on — useful for placeholders in UI)
+      - effective_title (what will actually be narrated given the policy)
+    """
+    db = get_project_db(slug)
+    chapters = db.get_chapters()
+    out = []
+    for ch in chapters:
+        auto = chunk.auto_narration_title(ch.get("title", ""), ch["idx"], chapter_prefix)
+        nt = ch.get("narration_title")
+        if nt is None:
+            effective = auto
+        else:
+            effective = nt  # may be empty string → no narration
+        out.append({
+            "id": ch["id"],
+            "idx": ch["idx"],
+            "title": ch["title"],
+            "narration_title": nt,
+            "auto_title": auto,
+            "effective_title": effective,
+        })
+    return out
+
+
+@router.patch("/{slug}/chapters/{chapter_id}/narration")
+def update_chapter_narration(slug: str, chapter_id: int,
+                             req: ChapterNarrationUpdate):
+    """Update a chapter's narration title.
+
+    Pass ``narration_title`` as:
+      - omitted/null → revert to auto default
+      - "" (empty)   → don't narrate this chapter's title
+      - any text     → use as the title-chunk text verbatim
+    """
+    db = get_project_db(slug)
+    db.update_chapter_narration_title(chapter_id, req.narration_title)
+    return {"status": "updated"}
+
+
+# ─── Per-chunk voice override ─────────────────────────────────────────
+
+@router.patch("/{slug}/chunks/{chunk_id}/voice")
+def update_chunk_voice(slug: str, chunk_id: str, req: ChunkVoiceUpdate):
+    """Set or clear a per-chunk voice override.
+
+    Pass ``voice`` as null/empty to revert the chunk to inheriting the
+    voice supplied in the next generate request.
+    """
+    db = get_project_db(slug)
+    voice = req.voice or None
+    db.update_chunk_voice(chunk_id, voice)
+    return {"status": "updated", "chunk_id": chunk_id, "voice": voice}
+
+
+@router.post("/{slug}/chunks/voice-bulk")
+def bulk_update_chunk_voice(slug: str, req: BulkChunkVoiceUpdate):
+    """Apply the same voice override to many chunks at once.
+
+    Used by the Generate Audio UI when the user picks a voice for an
+    entire scene or for the current selection.
+    """
+    db = get_project_db(slug)
+    voice = req.voice or None
+    n = db.bulk_update_chunk_voice(req.chunk_ids, voice)
+    return {"status": "updated", "count": n, "voice": voice}
+
+
+@router.post("/{slug}/title-chunks/refresh")
+def refresh_title_chunks(slug: str, chapter_prefix: bool = True):
+    """Rebuild only the per-chapter title chunks from current narration_title.
+
+    Cheaper than re-running the full chunker — preserves existing content
+    chunks (and their generations / QA / flags) and just deletes/recreates
+    rows where ``is_title_chunk = 1``. Global indexes are kept stable.
+    """
+    db = get_project_db(slug)
+    # Drop existing title chunks (and their downstream generations / QA
+    # rows so we don't keep stale audio for a chapter the user just opted
+    # out of narrating).
+    title_rows = db.fetchall("SELECT id FROM chunks WHERE is_title_chunk=1")
+    for row in title_rows:
+        cid = row["id"]
+        db.execute("DELETE FROM qa_results WHERE chunk_id=?", (cid,))
+        db.execute("DELETE FROM generations WHERE chunk_id=?", (cid,))
+        db.execute("DELETE FROM user_flags WHERE chunk_id=?", (cid,))
+    db.execute("DELETE FROM chunks WHERE is_title_chunk=1")
+    db.commit()
+
+    # Recreate based on each chapter's narration_title (or auto default).
+    chapters = db.get_chapters()
+    new_titles = []
+    for ch in chapters:
+        title_text = chunk.resolve_narration_title(ch, chapter_prefix)
+        if not title_text:
+            continue
+        # Place title chunk just before its chapter's first content chunk
+        first_content = db.fetchone(
+            "SELECT global_index FROM chunks WHERE chapter_id=? AND is_title_chunk=0 ORDER BY global_index LIMIT 1",
+            (ch["id"],),
+        )
+        gi = first_content["global_index"] if first_content else 0
+        new_titles.append({
+            "id": f"ch{ch['idx']:03d}_title",
+            "chapter_id": ch["id"],
+            "local_index": -1,
+            "global_index": gi,
+            "original_text": title_text,
+            "cleaned_text": title_text,
+            "word_count": len(title_text.split()),
+            "scene_break_after": 0,
+            "chapter_break_after": 0,
+            "is_title_chunk": 1,
+        })
+
+    if new_titles:
+        db.insert_chunks(new_titles)
+    return {"created": len(new_titles)}
 
 
 # ─── Step 6-7: Word scanning ──────────────────────────────────────────
@@ -208,6 +377,89 @@ def get_pron_entries(slug: str, status: str = None):
     """Get pronunciation entries, optionally filtered by status."""
     db = get_project_db(slug)
     return db.get_pron_entries(status=status)
+
+
+@router.get("/{slug}/pron/export")
+def export_pron(slug: str):
+    """Export pronunciation dictionary as a downloadable JSON file."""
+    import json as _json
+    from fastapi.responses import Response
+    db = get_project_db(slug)
+    entries = db.get_pron_entries()
+    exportable = [
+        {
+            "word": e["word"],
+            "phonetic": e["phonetic"],
+            "type_tag": e["type_tag"] or "",
+            "status": e["status"],
+            "notes": e["notes"] or "",
+            "is_global": e["is_global"] if e["is_global"] is not None else 1,
+        }
+        for e in entries
+        if e["status"] in ("approved", "skipped")
+    ]
+    content = _json.dumps({"version": 1, "entries": exportable}, indent=2, ensure_ascii=False)
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="pron_{slug}.json"'},
+    )
+
+
+@router.post("/{slug}/pron/import")
+def import_pron(slug: str, payload: dict):
+    """Import pronunciation entries from a JSON dictionary.
+
+    For each entry: updates the existing word's phonetic/status if found,
+    otherwise inserts it as a new entry with no book context.
+    """
+    db = get_project_db(slug)
+    entries = payload.get("entries", [])
+    imported = 0
+    updated = 0
+    skipped = 0
+    for e in entries:
+        word = (e.get("word") or "").strip()
+        if not word:
+            continue
+        phonetic = e.get("phonetic") or None
+        status = e.get("status") or "approved"
+        type_tag = e.get("type_tag") or ""
+        notes = e.get("notes") or ""
+        is_global = int(e.get("is_global", 1))
+
+        existing = db.fetchone("SELECT id, status FROM pron_entries WHERE word=?", (word,))
+        if existing:
+            if existing["status"] == "approved":
+                skipped += 1
+                continue
+            db.update_pron_entry(
+                existing["id"],
+                phonetic=phonetic,
+                status=status,
+                notes=notes,
+                is_global=is_global,
+            )
+            updated += 1
+        else:
+            db.insert_pron_entry(
+                word=word,
+                frequency=0,
+                example_chunk_id="",
+                example_context="",
+                type_tag=type_tag,
+            )
+            new_id = db.fetchone("SELECT id FROM pron_entries WHERE word=?", (word,))["id"]
+            db.update_pron_entry(
+                new_id,
+                phonetic=phonetic,
+                status=status,
+                notes=notes,
+                is_global=is_global,
+            )
+            imported += 1
+
+    return {"imported": imported, "updated": updated, "skipped": skipped}
 
 
 @router.post("/{slug}/pron/{entry_id}/update")
@@ -610,8 +862,7 @@ def test_tagging(slug: str, req: TaggingRequest):
 
 
 @router.post("/{slug}/tagging/apply")
-def apply_tagging(slug: str, bg: BackgroundTasks,
-                  req: TaggingApplyRequest):
+def apply_tagging(slug: str, req: TaggingApplyRequest):
     """Tag all chunks (runs in background)."""
     db = get_project_db(slug)
     settings = get_settings()
@@ -640,7 +891,8 @@ def apply_tagging(slug: str, bg: BackgroundTasks,
         tagging.tag_all_chunks(db, llm, system_prompt, progress_callback=on_progress)
         _task_progress[task_id]["status"] = "done"
 
-    bg.add_task(run_tagging)
+    if not _run_in_dedicated_thread(task_id, run_tagging):
+        raise HTTPException(409, "Tagging task already running")
     return {"task_id": task_id, "status": "started"}
 
 
@@ -715,7 +967,7 @@ def save_tagging_prompt(slug: str, req: TaggingSaveRequest):
 # ─── Step 11-12: Audio generation ─────────────────────────────────────
 
 @router.post("/{slug}/generate")
-def generate_audio(slug: str, bg: BackgroundTasks, req: GenerateRequest):
+def generate_audio(slug: str, req: GenerateRequest):
     """Generate audio for chunks (runs in background)."""
     db = get_project_db(slug)
     settings = get_settings()
@@ -724,6 +976,9 @@ def generate_audio(slug: str, bg: BackgroundTasks, req: GenerateRequest):
     tts = get_tts(settings.engine.tts_engine)
     if not tts.is_loaded():
         try:
+            stt = get_stt(settings.engine.stt_engine)
+            if stt.is_loaded():
+                stt.unload_model()
             tts.load_model(settings.engine.tts_config)
         except Exception as e:
             raise HTTPException(503,
@@ -736,6 +991,35 @@ def generate_audio(slug: str, bg: BackgroundTasks, req: GenerateRequest):
     # Apply pronunciation to all chunks first
     from app.pipeline.pronunciation import apply_all_pronunciation
     apply_all_pronunciation(db)
+
+    # Resolve which chunk IDs to generate based on explicit list or mode
+    if req.chunk_ids:
+        resolved_chunk_ids = req.chunk_ids
+    elif req.mode == "all":
+        resolved_chunk_ids = [c["id"] for c in db.get_chunks()]
+    elif req.mode == "failed":
+        resolved_chunk_ids = []
+        for ch in db.get_chunks():
+            gen = db.get_latest_generation(ch["id"])
+            if gen and gen["status"] == "error":
+                resolved_chunk_ids.append(ch["id"])
+                continue
+            qa_r = db.fetchone(
+                "SELECT status FROM qa_results WHERE chunk_id=? ORDER BY id DESC LIMIT 1",
+                (ch["id"],),
+            )
+            if qa_r and qa_r["status"] == "fail":
+                resolved_chunk_ids.append(ch["id"])
+                continue
+            flags = db.fetchall(
+                "SELECT id FROM user_flags WHERE chunk_id=? AND resolved=0",
+                (ch["id"],),
+            )
+            if flags:
+                resolved_chunk_ids.append(ch["id"])
+    else:
+        # "pending": generate_batch will select chunks without a successful generation
+        resolved_chunk_ids = None
 
     task_id = f"{slug}_generate"
     # Persist chosen voice to project metadata so UI remembers it per-project
@@ -759,12 +1043,16 @@ def generate_audio(slug: str, bg: BackgroundTasks, req: GenerateRequest):
         return stop_check
 
     def run_gen():
+        import time as _t
         ok_count = 0
         err_count = 0
+        started_at = _t.time()
 
         def on_progress(current, total, result):
             nonlocal ok_count, err_count
-            if result.get("status") == "ok":
+            if result.get("status") == "starting":
+                pass
+            elif result.get("status") == "ok":
                 ok_count += 1
             else:
                 err_count += 1
@@ -772,25 +1060,29 @@ def generate_audio(slug: str, bg: BackgroundTasks, req: GenerateRequest):
                 "current": current, "total": total,
                 "status": "running", "ok": ok_count, "errors": err_count,
                 "last_result": result,
+                "started_at": started_at,
             }
 
         summary = generate.generate_batch(
             tts, db, voice, audio_dir,
-            chunk_ids=req.chunk_ids or None,
+            chunk_ids=resolved_chunk_ids,
             max_retries=req.max_retries,
             progress_callback=on_progress,
             stop_check=make_stop_check(),
         )
         _task_progress[task_id] = {
-            "status": "done", **{k: v for k, v in summary.items() if k != "results"}
+            "status": "done",
+            "started_at": started_at,
+            **{k: v for k, v in summary.items() if k != "results"},
         }
 
-    bg.add_task(run_gen)
+    if not _run_in_dedicated_thread(task_id, run_gen):
+        raise HTTPException(409, "Generation task already running")
     return {"task_id": task_id, "status": "started"}
 
 
 @router.post("/{slug}/generate_test")
-def generate_test(slug: str, bg: BackgroundTasks, req: GenQATestRequest):
+def generate_test(slug: str, req: GenQATestRequest):
     """Run a short generate -> QA cycle on a sample of chunks.
 
     This runs up to `max_cycles` cycles: generate for the selected chunks,
@@ -893,28 +1185,31 @@ def generate_test(slug: str, bg: BackgroundTasks, req: GenQATestRequest):
             if make_stop_check()():
                 break
 
-                # Generation phase for remaining chunks
-                def on_gen_progress(current, total, result):
-                    _task_progress[task_id] = {
-                        "phase": "generate",
-                        "cycle": cycle,
-                        "current": current, "total": total,
-                        "status": "running",
-                        "last_result": result,
-                    }
+            # Generation phase for remaining chunks
+            def on_gen_progress(current, total, result):
+                _task_progress[task_id] = {
+                    "phase": "generate",
+                    "cycle": cycle,
+                    "current": current, "total": total,
+                    "status": "running",
+                    "last_result": result,
+                }
 
-                if remaining:
-                    # Ensure TTS is loaded before attempting generation
-                    if not ensure_tts_loaded():
-                        # ensure_tts_loaded writes an error message into _task_progress
-                        break
-                    generate.generate_batch(
-                        tts, db, voice, project_dir / "audio",
-                        chunk_ids=list(remaining),
-                        max_retries=req.max_retries,
-                        progress_callback=on_gen_progress,
-                        stop_check=make_stop_check(),
-                    )
+            if remaining:
+                # Ensure TTS is loaded before attempting generation
+                if not ensure_tts_loaded():
+                    # ensure_tts_loaded writes an error message into _task_progress
+                    break
+                # For the first cycle, do a single-generation pass (no internal retries).
+                # Subsequent cycles attempt regeneration with the configured max_retries.
+                gen_max_retries = 1 if cycle == 1 else req.max_retries
+                generate.generate_batch(
+                    tts, db, voice, project_dir / "audio",
+                    chunk_ids=list(remaining),
+                    max_retries=gen_max_retries,
+                    progress_callback=on_gen_progress,
+                    stop_check=make_stop_check(),
+                )
 
             # QA phase
             pron_map = build_replacement_map(db)
@@ -969,13 +1264,13 @@ def generate_test(slug: str, bg: BackgroundTasks, req: GenQATestRequest):
 
         _task_progress[task_id] = {"status": "done", "cycles": cycles, "results": results}
 
-    bg.add_task(run_test)
+    if not _run_in_dedicated_thread(task_id, run_test):
+        raise HTTPException(409, "Generate-test task already running")
     return {"task_id": task_id, "status": "started"}
 
 
 @router.post("/{slug}/qa")
-def run_qa(slug: str, bg: BackgroundTasks,
-           thresholds: QAThresholds = QAThresholds()):
+def run_qa(slug: str, thresholds: QAThresholds = QAThresholds()):
     """Run STT QA on generated audio (runs in background)."""
     db = get_project_db(slug)
     settings = get_settings()
@@ -983,6 +1278,9 @@ def run_qa(slug: str, bg: BackgroundTasks,
     stt = get_stt(settings.engine.stt_engine)
     if not stt.is_loaded():
         try:
+            tts = get_tts(settings.engine.tts_engine)
+            if tts.is_loaded():
+                tts.unload_model()
             stt.load_model(settings.engine.stt_config)
         except Exception as e:
             raise HTTPException(503,
@@ -993,6 +1291,23 @@ def run_qa(slug: str, bg: BackgroundTasks,
 
     from app.pipeline.pronunciation import build_replacement_map
     pron_map = build_replacement_map(db)
+
+    # When mode="new" (default), skip chunks that already have a passing/override QA
+    # result for their current generation.  mode="all" re-checks everything.
+    qa_chunk_ids: list[str] | None = None
+    if thresholds.mode == "new":
+        qa_chunk_ids = []
+        for ch in db.get_chunks():
+            gen = db.get_latest_generation(ch["id"])
+            if not gen or gen["status"] != "ok":
+                continue
+            qa_r = db.fetchone(
+                "SELECT status FROM qa_results WHERE chunk_id=? ORDER BY id DESC LIMIT 1",
+                (ch["id"],),
+            )
+            if qa_r and qa_r["status"] in ("pass", "override"):
+                continue
+            qa_chunk_ids.append(ch["id"])
 
     task_id = f"{slug}_qa"
     _task_progress[task_id] = {"current": 0, "total": 0, "status": "running"}
@@ -1019,6 +1334,7 @@ def run_qa(slug: str, bg: BackgroundTasks,
 
         summary = qa.qa_batch(
             stt, db,
+            chunk_ids=qa_chunk_ids,
             threshold=threshold,
             pron_map=pron_map,
             progress_callback=on_progress,
@@ -1027,7 +1343,8 @@ def run_qa(slug: str, bg: BackgroundTasks,
             "status": "done", **{k: v for k, v in summary.items() if k != "results"}
         }
 
-    bg.add_task(run_qa_batch)
+    if not _run_in_dedicated_thread(task_id, run_qa_batch):
+        raise HTTPException(409, "QA task already running")
     return {"task_id": task_id, "status": "started"}
 
 
@@ -1079,15 +1396,19 @@ def get_task_controls(slug: str, task_name: str):
 
 @router.post("/{slug}/export")
 def export_audio(slug: str, req: ExportRequest):
-    """Merge and export audio."""
+    """Merge and export audio.
+
+    The response includes ``total_seams``, ``flagged_seams``, and a
+    ``flagged`` list with per-seam warnings (long silences, abrupt cuts,
+    loudness jumps, sample-discontinuity pops). The UI surfaces these so
+    the user can inspect or regenerate suspect chunks before publishing.
+    """
     db = get_project_db(slug)
     settings = get_settings()
     project_dir = get_project_dir(slug)
     export_dir = project_dir / "export"
 
     if req.scope == "chapter":
-        files = merge.export_by_chapter(db, export_dir, settings.audio)
-        return {"files": files}
+        return merge.export_by_chapter(db, export_dir, settings.audio)
     else:
-        path = merge.export_full_book(db, export_dir, settings.audio)
-        return {"file": path}
+        return merge.export_full_book(db, export_dir, settings.audio)

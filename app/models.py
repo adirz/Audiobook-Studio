@@ -91,6 +91,23 @@ class PronUpdate(BaseModel):
     status: Optional[str] = None
 
 
+class ChapterNarrationUpdate(BaseModel):
+    # None = revert to auto-default; "" = no narration; any other string =
+    # explicit override.
+    narration_title: Optional[str] = None
+
+
+class ChunkVoiceUpdate(BaseModel):
+    # None or empty string = clear override (chunk inherits the voice
+    # passed in the generate request).
+    voice: Optional[str] = None
+
+
+class BulkChunkVoiceUpdate(BaseModel):
+    chunk_ids: list[str]
+    voice: Optional[str] = None
+
+
 class PronTestRequest(BaseModel):
     entry_id: int
     phonetic: str
@@ -113,14 +130,16 @@ class LocationOverride(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    chunk_ids: list[str] = []      # empty = all pending
+    chunk_ids: list[str] = []      # empty = use mode
     voice: str = ""
     max_retries: int = 3
+    mode: str = "pending"          # pending | all | failed
 
 
 class QAThresholds(BaseModel):
     min_similarity: float = 0.85
     auto_pass: float = 0.95
+    mode: str = "new"              # new = skip passing/override, all = recheck everything
 
 
 class GenQATestRequest(BaseModel):
