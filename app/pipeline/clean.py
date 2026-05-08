@@ -25,14 +25,19 @@ def clean_chapter_text(text: str, scene_break_symbols: set[str]) -> str:
     # Normalize ellipses
     text = text.replace("...", "…")
 
-    # Convert confirmed scene break symbols to markers
+    # Convert confirmed scene break symbols to markers. The originating
+    # symbol is embedded so downstream stages (chunking, the Generate
+    # Audio filter) can distinguish "after a ♦ break" from "after a
+    # * * * break" when a manuscript uses more than one kind. Keep
+    # ``[SCENE_BREAK]`` (no symbol) recognized for backward compatibility.
     for sym in scene_break_symbols:
+        marker = f"[SCENE_BREAK:{sym}]"
         if len(sym) == 1:
             # Single character repeated as scene break: ♦ ♦ ♦, etc.
             escaped = re.escape(sym)
             text = re.sub(
                 rf"^{escaped}(\s*{escaped})*\s*$",
-                "[SCENE_BREAK]",
+                marker,
                 text,
                 flags=re.MULTILINE,
             )
@@ -41,7 +46,7 @@ def clean_chapter_text(text: str, scene_break_symbols: set[str]) -> str:
             escaped = re.escape(sym)
             text = re.sub(
                 rf"^{escaped}\s*$",
-                "[SCENE_BREAK]",
+                marker,
                 text,
                 flags=re.MULTILINE,
             )

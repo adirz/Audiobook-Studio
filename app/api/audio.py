@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from app.api.projects import get_project_db, get_project_dir
-from app.models import ChunkFlag, LocationOverride
+from app.models import ChunkFlag, LocationOverride, ManualQAUpdate
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
@@ -117,17 +117,25 @@ def get_review_data(slug: str, chapter_id: int = None):
     # chapter boundaries and increments at every chunk whose
     # ``scene_break_after`` is set. Scene 1 covers everything before the
     # first scene break inside a chapter — i.e. the "default" / "other"
-    # bucket the UI surfaces.
+    # bucket the UI surfaces. We also propagate the *originating symbol*
+    # of the most recent scene break so each chunk knows which kind of
+    # scene break it sits behind (used by the Generate-Audio filter to
+    # split "after ♦" from "after * * *", etc.).
     scene_by_chunk: dict[str, int] = {}
+    sb_before_by_chunk: dict[str, str | None] = {}
     current_chapter = None
     current_scene = 1
+    last_sb_symbol: str | None = None
     for ch in chunks:
         if ch.get("chapter_id") != current_chapter:
             current_chapter = ch.get("chapter_id")
             current_scene = 1
+            last_sb_symbol = None
         scene_by_chunk[ch["id"]] = current_scene
+        sb_before_by_chunk[ch["id"]] = last_sb_symbol
         if ch.get("scene_break_after"):
             current_scene += 1
+            last_sb_symbol = ch.get("scene_break_symbol")
 
     enriched = []
     for ch in chunks:
@@ -153,6 +161,7 @@ def get_review_data(slug: str, chapter_id: int = None):
             "has_audio": bool(gen and gen["status"] == "ok"),
             "audio_url": f"/api/audio/{slug}/chunk/{ch['id']}" if gen and gen["status"] == "ok" else None,
             "scene_index": scene_by_chunk.get(ch["id"], 1),
+            "scene_break_symbol_before": sb_before_by_chunk.get(ch["id"]),
         })
 
     return enriched
@@ -200,6 +209,24 @@ def get_chapter_list(slug: str):
         })
 
     return result
+
+
+@router.post("/{slug}/review/qa-status")
+def set_manual_qa_status(slug: str, req: ManualQAUpdate):
+    """Manually mark a chunk as pass / fail, or clear the manual mark.
+
+    Manual marks are stored as a fresh ``qa_results`` row with a NULL
+    similarity score; clearing only drops that override row, leaving any
+    previous automatic QA intact.
+    """
+    db = get_project_db(slug)
+    if req.status == "clear":
+        cleared = db.clear_manual_qa(req.chunk_id)
+        return {"status": "cleared" if cleared else "noop", "chunk_id": req.chunk_id}
+    if req.status not in ("pass", "fail"):
+        raise HTTPException(400, "status must be one of pass / fail / clear")
+    db.set_manual_qa_status(req.chunk_id, req.status)
+    return {"status": req.status, "chunk_id": req.chunk_id}
 
 
 @router.post("/{slug}/review/flag")

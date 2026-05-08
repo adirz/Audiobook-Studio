@@ -135,6 +135,137 @@ def delete_project(slug: str):
     return {"status": "deleted"}
 
 
+@router.get("/{slug}/backup")
+def download_backup(slug: str):
+    """Package the project as a ZIP archive for download."""
+    import tempfile, zipfile
+    from starlette.background import BackgroundTask
+
+    project_dir = get_project_dir(slug)
+    db = get_project_db(slug)
+
+    try:
+        db.conn.execute("PRAGMA wal_checkpoint(FULL)")
+    except Exception:
+        pass
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(project_dir.rglob("*")):
+            if path.is_file() and path.suffix not in (".wal", ".shm"):
+                arcname = str(path.relative_to(project_dir.parent))
+                zf.write(str(path), arcname)
+
+    def cleanup():
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=f"{slug}_backup.zip",
+        background=BackgroundTask(cleanup),
+    )
+
+
+@router.post("/{slug}/copy")
+def copy_project(slug: str, payload: dict):
+    """Create a server-side copy of the project under a new name."""
+    new_name = (payload.get("new_name") or "").strip()
+    if not new_name:
+        raise HTTPException(400, "new_name is required")
+
+    project_dir = get_project_dir(slug)
+    new_slug = slugify(new_name)
+    new_dir = PROJECTS_DIR / new_slug
+
+    if new_dir.exists():
+        raise HTTPException(409, f"A project named '{new_slug}' already exists")
+
+    db = get_project_db(slug)
+    try:
+        db.conn.execute("PRAGMA wal_checkpoint(FULL)")
+    except Exception:
+        pass
+
+    shutil.copytree(str(project_dir), str(new_dir))
+
+    new_db = ProjectDB(new_dir / "project.db")
+    new_db.set_meta("project_name", new_name)
+    new_db.set_meta("created_at", datetime.now().isoformat())
+    _open_dbs[new_slug] = new_db
+
+    return ProjectInfo(
+        name=new_name,
+        slug=new_slug,
+        description=new_db.get_meta("description") or "",
+        current_step=new_db.get_meta("current_step") or "new",
+        created_at=new_db.get_meta("created_at"),
+        chapter_count=len(new_db.get_chapters()),
+        chunk_count=len(new_db.get_chunks()),
+        voice=new_db.get_meta("voice") or "",
+    )
+
+
+@router.get("/{slug}/usage")
+def get_project_usage(slug: str):
+    """Get resource usage estimates for a single project."""
+    project_dir = get_project_dir(slug)
+    db = get_project_db(slug)
+
+    def dir_size(path: Path) -> int:
+        total = 0
+        if path.exists():
+            for f in path.rglob("*"):
+                if f.is_file():
+                    try:
+                        total += f.stat().st_size
+                    except Exception:
+                        pass
+        return total
+
+    audio_bytes = dir_size(project_dir / "audio")
+    export_bytes = dir_size(project_dir / "export")
+    test_clips_bytes = dir_size(project_dir / "test_clips")
+    db_path = project_dir / "project.db"
+    db_bytes = db_path.stat().st_size if db_path.exists() else 0
+
+    gen = db.fetchone(
+        """SELECT
+           COUNT(*) as total_attempts,
+           SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) as ok_generations,
+           COALESCE(SUM(CASE WHEN status='ok' THEN duration_sec ELSE 0 END), 0) as total_audio_sec,
+           COALESCE(SUM(CASE WHEN status='ok' THEN gen_time_sec ELSE 0 END), 0) as total_gen_time_sec
+           FROM generations"""
+    ) or {}
+
+    qa = db.fetchone("SELECT COUNT(*) as total FROM qa_results") or {}
+
+    return {
+        "disk": {
+            "audio_bytes": audio_bytes,
+            "export_bytes": export_bytes,
+            "test_clips_bytes": test_clips_bytes,
+            "db_bytes": db_bytes,
+            "total_bytes": audio_bytes + export_bytes + test_clips_bytes + db_bytes,
+        },
+        "audio": {
+            "total_generated_sec": float(gen.get("total_audio_sec") or 0),
+            "ok_generations": int(gen.get("ok_generations") or 0),
+            "total_attempts": int(gen.get("total_attempts") or 0),
+        },
+        "compute": {
+            "total_gen_time_sec": float(gen.get("total_gen_time_sec") or 0),
+            "total_qa_runs": int(qa.get("total") or 0),
+        },
+    }
+
+
 @router.post("/{slug}/upload")
 async def upload_manuscript(slug: str, file: UploadFile = File(...)):
     """Upload a manuscript file to the project."""

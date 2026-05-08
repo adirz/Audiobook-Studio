@@ -167,6 +167,13 @@ class ProjectDB:
             self.conn.execute(
                 "ALTER TABLE chunks ADD COLUMN voice TEXT"
             )
+        # Migrate: record which scene-break symbol terminated a chunk
+        # (NULL when no break, or for legacy data cleaned before the
+        # symbol was tracked).
+        if "scene_break_symbol" not in cols:
+            self.conn.execute(
+                "ALTER TABLE chunks ADD COLUMN scene_break_symbol TEXT"
+            )
         # Set schema version if new
         existing = self.get_meta("schema_version")
         if existing is None:
@@ -275,19 +282,21 @@ class ProjectDB:
         # without raising UNIQUE constraint errors when chunk IDs collide.
         for c in chunks:
             is_title = int(bool(c.get("is_title_chunk", 0)))
+            sb_sym = c.get("scene_break_symbol")
             vals = (
                 c["id"], c["chapter_id"], c["local_index"], c["global_index"],
                 c["original_text"], c.get("cleaned_text"),
                 c["word_count"], c.get("scene_break_after", 0),
-                c.get("chapter_break_after", 0), is_title,
+                c.get("chapter_break_after", 0), is_title, sb_sym,
             )
             try:
                 self.execute(
                     """INSERT INTO chunks
                        (id, chapter_id, local_index, global_index,
                         original_text, cleaned_text, word_count,
-                        scene_break_after, chapter_break_after, is_title_chunk)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        scene_break_after, chapter_break_after, is_title_chunk,
+                        scene_break_symbol)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     vals,
                 )
             except sqlite3.IntegrityError:
@@ -296,13 +305,14 @@ class ProjectDB:
                     """UPDATE chunks SET
                        chapter_id=?, local_index=?, global_index=?,
                        original_text=?, cleaned_text=?, word_count=?,
-                       scene_break_after=?, chapter_break_after=?, is_title_chunk=?
+                       scene_break_after=?, chapter_break_after=?, is_title_chunk=?,
+                       scene_break_symbol=?
                        WHERE id=?""",
                     (
                         c["chapter_id"], c["local_index"], c["global_index"],
                         c["original_text"], c.get("cleaned_text"),
                         c["word_count"], c.get("scene_break_after", 0),
-                        c.get("chapter_break_after", 0), is_title, c["id"],
+                        c.get("chapter_break_after", 0), is_title, sb_sym, c["id"],
                     ),
                 )
         self.commit()
@@ -509,6 +519,42 @@ class ProjectDB:
         )
         self.commit()
         return cur.lastrowid
+
+    # Manual QA overrides: a chunk's QA status (pass/fail) can be set or
+    # cleared by the user from the review UI. We represent these as a new
+    # qa_results row whose ``similarity_score`` is NULL — that NULL is
+    # the marker the system uses to tell "manually marked" rows apart
+    # from automatic Whisper-driven ones (and is what ``clear_manual_qa``
+    # looks for when reverting).
+    def set_manual_qa_status(self, chunk_id: str, status: str) -> int:
+        gen = self.get_latest_generation(chunk_id)
+        gen_id = gen["id"] if gen else 0
+        cur = self.execute(
+            """INSERT INTO qa_results
+               (chunk_id, generation_id, transcribed_text,
+                similarity_score, word_diff_json, status)
+               VALUES (?, ?, ?, NULL, NULL, ?)""",
+            (chunk_id, gen_id, "(manual override)", status),
+        )
+        self.commit()
+        return cur.lastrowid
+
+    def clear_manual_qa(self, chunk_id: str) -> bool:
+        """Drop the most recent manual override row, if any.
+
+        Returns True when a row was deleted. Manual overrides are
+        identified by ``similarity_score IS NULL``.
+        """
+        row = self.fetchone(
+            """SELECT id, similarity_score FROM qa_results
+               WHERE chunk_id=? ORDER BY id DESC LIMIT 1""",
+            (chunk_id,),
+        )
+        if not row or row.get("similarity_score") is not None:
+            return False
+        self.execute("DELETE FROM qa_results WHERE id=?", (row["id"],))
+        self.commit()
+        return True
 
     # -- User flags --
 

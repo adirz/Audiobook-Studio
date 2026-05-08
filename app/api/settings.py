@@ -92,3 +92,89 @@ def get_tags():
     settings = get_settings()
     tts = get_tts(settings.engine.tts_engine)
     return [t.model_dump() for t in tts.get_supported_tags()]
+
+
+@router.get("/usage")
+def get_aggregate_usage():
+    """Aggregate resource usage across all projects."""
+    from app.config import PROJECTS_DIR
+    from app.database import ProjectDB
+
+    def dir_size(path) -> int:
+        total = 0
+        if path.exists():
+            for f in path.rglob("*"):
+                if f.is_file():
+                    try:
+                        total += f.stat().st_size
+                    except Exception:
+                        pass
+        return total
+
+    totals = {
+        "audio_bytes": 0, "export_bytes": 0,
+        "test_clips_bytes": 0, "db_bytes": 0,
+        "total_audio_sec": 0.0, "ok_generations": 0,
+        "total_attempts": 0, "total_gen_time_sec": 0.0,
+        "total_qa_runs": 0, "project_count": 0,
+    }
+
+    if not PROJECTS_DIR.exists():
+        return _format_usage(totals)
+
+    for d in PROJECTS_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        db_path = d / "project.db"
+        if not db_path.exists():
+            continue
+
+        totals["project_count"] += 1
+        totals["audio_bytes"] += dir_size(d / "audio")
+        totals["export_bytes"] += dir_size(d / "export")
+        totals["test_clips_bytes"] += dir_size(d / "test_clips")
+        totals["db_bytes"] += db_path.stat().st_size
+
+        try:
+            db = ProjectDB(db_path)
+            gen = db.fetchone(
+                """SELECT
+                   COUNT(*) as total_attempts,
+                   SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) as ok_gen,
+                   COALESCE(SUM(CASE WHEN status='ok' THEN duration_sec ELSE 0 END), 0) as audio_sec,
+                   COALESCE(SUM(CASE WHEN status='ok' THEN gen_time_sec ELSE 0 END), 0) as gen_time_sec
+                   FROM generations"""
+            ) or {}
+            qa = db.fetchone("SELECT COUNT(*) as total FROM qa_results") or {}
+            totals["total_attempts"] += int(gen.get("total_attempts") or 0)
+            totals["ok_generations"] += int(gen.get("ok_gen") or 0)
+            totals["total_audio_sec"] += float(gen.get("audio_sec") or 0)
+            totals["total_gen_time_sec"] += float(gen.get("gen_time_sec") or 0)
+            totals["total_qa_runs"] += int(qa.get("total") or 0)
+        except Exception:
+            pass
+
+    return _format_usage(totals)
+
+
+def _format_usage(t: dict) -> dict:
+    total_disk = t["audio_bytes"] + t["export_bytes"] + t["test_clips_bytes"] + t["db_bytes"]
+    return {
+        "project_count": t.get("project_count", 0),
+        "disk": {
+            "audio_bytes": t["audio_bytes"],
+            "export_bytes": t["export_bytes"],
+            "test_clips_bytes": t["test_clips_bytes"],
+            "db_bytes": t["db_bytes"],
+            "total_bytes": total_disk,
+        },
+        "audio": {
+            "total_generated_sec": t["total_audio_sec"],
+            "ok_generations": t["ok_generations"],
+            "total_attempts": t["total_attempts"],
+        },
+        "compute": {
+            "total_gen_time_sec": t["total_gen_time_sec"],
+            "total_qa_runs": t["total_qa_runs"],
+        },
+    }

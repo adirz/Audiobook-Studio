@@ -58,6 +58,22 @@
         </div>
     </div>
 
+    <!-- Copy Project Modal -->
+    <div class="modal-overlay" id="copy-project-modal">
+        <div class="modal">
+            <h2>Copy Project</h2>
+            <p class="text-muted mb-md" id="copy-project-desc" style="font-size:0.85rem;"></p>
+            <div class="form-group">
+                <label for="copy-project-name">New project name</label>
+                <input type="text" id="copy-project-name" placeholder="e.g. My Book (copy)">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('copy-project-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmCopyProject()">Copy</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/js/api.js"></script>
     <script>
         let projects = [];
@@ -99,8 +115,49 @@
                                 : 'Not started'
                         ),
                     ),
+                    el('div', {
+                        class: 'flex gap-sm mt-sm',
+                        style: { borderTop: '1px solid var(--color-border)', paddingTop: '8px' },
+                        onClick: e => e.stopPropagation(),
+                    },
+                        el('button', {
+                            class: 'btn btn-ghost btn-small',
+                            title: 'Download a ZIP backup of this project',
+                            onClick: e => { e.stopPropagation(); backupProject(p.slug); },
+                        }, 'Backup'),
+                        el('button', {
+                            class: 'btn btn-ghost btn-small',
+                            title: 'Clone this project under a new name',
+                            onClick: e => { e.stopPropagation(); openCopyModal(p.slug, p.name); },
+                        }, 'Copy'),
+                    ),
                 );
                 grid.appendChild(card);
+            }
+        }
+
+        function backupProject(slug) {
+            window.location.href = `/api/projects/${slug}/backup`;
+        }
+
+        let _copySlug = null;
+        function openCopyModal(slug, name) {
+            _copySlug = slug;
+            document.getElementById('copy-project-desc').textContent = `Copying: ${name}`;
+            document.getElementById('copy-project-name').value = name + ' (copy)';
+            openModal('copy-project-modal');
+        }
+
+        async function confirmCopyProject() {
+            const newName = document.getElementById('copy-project-name').value.trim();
+            if (!newName) { showToast('Enter a name for the copy', 'error'); return; }
+            try {
+                const proj = await API.post(`/api/projects/${_copySlug}/copy`, { new_name: newName });
+                closeModal('copy-project-modal');
+                showToast(`Copied as "${proj.name}"`, 'success');
+                await loadProjects();
+            } catch (err) {
+                showToast('Copy failed: ' + err.message, 'error');
             }
         }
 
@@ -123,18 +180,19 @@
         async function openSettings() {
             openModal('settings-modal');
             try {
-                const [settings, engines] = await Promise.all([
+                const [settings, engines, usage] = await Promise.all([
                     API.get('/api/settings/'),
                     API.get('/api/settings/engines'),
+                    API.get('/api/settings/usage').catch(() => null),
                 ]);
-                renderSettingsForm(settings, engines);
+                renderSettingsForm(settings, engines, usage);
             } catch (err) {
                 document.getElementById('settings-content').textContent =
                     'Failed to load settings: ' + err.message;
             }
         }
 
-        function renderSettingsForm(settings, engines) {
+        function renderSettingsForm(settings, engines, usage) {
             const container = document.getElementById('settings-content');
             container.innerHTML = '';
 
@@ -209,6 +267,40 @@
                 group.appendChild(input);
                 container.appendChild(group);
             }
+
+            // Resource Usage
+            if (usage) {
+                container.appendChild(el('h3', { class: 'mb-sm mt-lg' }, 'Resource Usage'));
+                const fmtBytes = b => {
+                    if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+                    if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+                    if (b >= 1e3) return (b / 1e3).toFixed(0) + ' KB';
+                    return b + ' B';
+                };
+                const fmtDur = s => {
+                    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+                    return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
+                };
+                const rows = [
+                    ['Projects', usage.project_count],
+                    ['Disk — audio', fmtBytes(usage.disk.audio_bytes)],
+                    ['Disk — exports', fmtBytes(usage.disk.export_bytes)],
+                    ['Disk — total', fmtBytes(usage.disk.total_bytes)],
+                    ['Audio generated', fmtDur(usage.audio.total_generated_sec)],
+                    ['Chunks generated (ok)', usage.audio.ok_generations],
+                    ['Generation attempts', usage.audio.total_attempts],
+                    ['TTS compute time', fmtDur(usage.compute.total_gen_time_sec)],
+                    ['QA transcriptions run', usage.compute.total_qa_runs],
+                ];
+                const tbl = el('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' } });
+                for (const [label, val] of rows) {
+                    const tr = el('tr', {});
+                    tr.appendChild(el('td', { style: { padding: '3px 0', color: 'var(--color-muted)', width: '55%' } }, label));
+                    tr.appendChild(el('td', { style: { padding: '3px 0', textAlign: 'right', fontVariantNumeric: 'tabular-nums' } }, String(val)));
+                    tbl.appendChild(tr);
+                }
+                container.appendChild(tbl);
+            }
         }
 
         async function saveSettings() {
@@ -266,6 +358,10 @@
         // Enter key in project name
         document.getElementById('project-name').addEventListener('keydown', (e) => {
             if (e.key === 'Enter') createProject();
+        });
+
+        document.getElementById('copy-project-name').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') confirmCopyProject();
         });
 
         loadProjects();

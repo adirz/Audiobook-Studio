@@ -5,10 +5,15 @@
    ═══════════════════════════════════════════════════════════════ */
 
 class ContinuousPlayer {
-    constructor({ slug, onChunkChange, onStateChange }) {
+    constructor({ slug, onChunkChange, onStateChange, getVisibleIds }) {
         this.slug = slug;
         this.onChunkChange = onChunkChange || (() => {});
         this.onStateChange = onStateChange || (() => {});
+        // Optional: a callback that returns a Set of chunk IDs currently
+        // visible in the UI. When provided, navigation (next/prev/scene
+        // jumps and auto-advance after a chunk ends) skips chunks not in
+        // that set so the audio "follows" what the user can see.
+        this.getVisibleIds = getVisibleIds || (() => null);
 
         this.chunks = [];          // full ordered list of review chunks
         this.chapters = [];        // chapter index for navigation
@@ -111,12 +116,38 @@ class ContinuousPlayer {
 
     // ─── Navigation ──────────────────────────────
 
-    next() {
-        if (this.currentIdx < this.chunks.length - 1) {
-            this.currentIdx++;
-            if (this.state === 'playing' || this.state === 'loading') this.play();
-            else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
+    _visibleSet() {
+        try {
+            const v = this.getVisibleIds && this.getVisibleIds();
+            return v instanceof Set ? v : null;
+        } catch (_) { return null; }
+    }
+    _isVisible(idx) {
+        const v = this._visibleSet();
+        if (!v) return true;
+        return v.has(this.chunks[idx]?.id);
+    }
+    _findNextVisible(fromIdx) {
+        for (let i = fromIdx; i < this.chunks.length; i++) {
+            if (this._isVisible(i)) return i;
         }
+        return -1;
+    }
+    _findPrevVisible(fromIdx) {
+        for (let i = fromIdx; i >= 0; i--) {
+            if (this._isVisible(i)) return i;
+        }
+        return -1;
+    }
+    _commitMove(idx) {
+        this.currentIdx = idx;
+        if (this.state === 'playing' || this.state === 'loading') this.play();
+        else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
+    }
+
+    next() {
+        const idx = this._findNextVisible(this.currentIdx + 1);
+        if (idx >= 0) this._commitMove(idx);
     }
 
     prev() {
@@ -125,50 +156,52 @@ class ContinuousPlayer {
             this.audio.currentTime = 0;
             return;
         }
-        if (this.currentIdx > 0) {
-            this.currentIdx--;
-            if (this.state === 'playing' || this.state === 'loading') this.play();
-            else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
-        }
+        const idx = this._findPrevVisible(this.currentIdx - 1);
+        if (idx >= 0) this._commitMove(idx);
     }
 
     jumpToChunk(chunkId) {
+        // Direct user choice — don't constrain by visibility.
         const idx = this.chunks.findIndex(c => c.id === chunkId);
-        if (idx >= 0) {
-            this.currentIdx = idx;
-            if (this.state === 'playing' || this.state === 'loading') this.play();
-            else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
-        }
+        if (idx >= 0) this._commitMove(idx);
     }
 
     jumpToChapter(chapterIdx) {
-        const idx = this.chunks.findIndex(c => c.chapter_id === chapterIdx || c.id?.startsWith(`ch${String(chapterIdx).padStart(3, '0')}`));
-        if (idx >= 0) {
-            this.currentIdx = idx;
-            if (this.state === 'playing' || this.state === 'loading') this.play();
-            else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
+        const pfx = `ch${String(chapterIdx).padStart(3, '0')}`;
+        const matches = (c) => c.chapter_id === chapterIdx || c.id?.startsWith(pfx);
+        // Prefer the first chapter chunk that's currently visible.
+        const v = this._visibleSet();
+        let idx = -1;
+        for (let i = 0; i < this.chunks.length; i++) {
+            if (matches(this.chunks[i]) && (!v || v.has(this.chunks[i].id))) { idx = i; break; }
         }
+        if (idx < 0) idx = this.chunks.findIndex(matches);
+        if (idx >= 0) this._commitMove(idx);
     }
 
     jumpToNextScene() {
+        // Walk forward through visible chunks looking for a scene/chapter
+        // boundary; jump to the first visible chunk after it.
         for (let i = this.currentIdx; i < this.chunks.length; i++) {
-            if (this.chunks[i].scene_break_after || this.chunks[i].chapter_break_after) {
-                if (i + 1 < this.chunks.length) {
-                    this.currentIdx = i + 1;
-                    if (this.state === 'playing' || this.state === 'loading') this.play();
-                    else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
-                }
+            if (!this._isVisible(i)) continue;
+            const c = this.chunks[i];
+            if (c.scene_break_after || c.chapter_break_after) {
+                const nxt = this._findNextVisible(i + 1);
+                if (nxt >= 0) this._commitMove(nxt);
                 return;
             }
         }
     }
 
     jumpToPrevScene() {
+        // Find the previous visible scene/chapter boundary, then jump
+        // to the first visible chunk after that boundary.
         for (let i = this.currentIdx - 2; i >= 0; i--) {
-            if (this.chunks[i].scene_break_after || this.chunks[i].chapter_break_after || i === 0) {
-                this.currentIdx = (i === 0) ? 0 : i + 1;
-                if (this.state === 'playing' || this.state === 'loading') this.play();
-                else this.onChunkChange(this.currentIdx, this.chunks[this.currentIdx]);
+            if (!this._isVisible(i)) continue;
+            const c = this.chunks[i];
+            if (c.scene_break_after || c.chapter_break_after || i === 0) {
+                const target = (i === 0) ? this._findNextVisible(0) : this._findNextVisible(i + 1);
+                if (target >= 0) this._commitMove(target);
                 return;
             }
         }
@@ -210,13 +243,22 @@ class ContinuousPlayer {
 
     // ─── Filter views ────────────────────────────
 
-    getChunksByFilter(filter) {
+    getChunksByFilter(filter, opts = {}) {
+        const hasScore = c => c.qa && c.qa.score !== null && c.qa.score !== undefined;
         switch (filter) {
             case 'all':       return this.chunks;
             case 'flagged':   return this.chunks.filter(c => c.flags && c.flags.length > 0);
             case 'qa_fail':   return this.chunks.filter(c => c.qa?.status === 'fail');
+            case 'qa_pass':   return this.chunks.filter(c => c.qa?.status === 'pass' || c.qa?.status === 'override');
+            case 'unchecked': return this.chunks.filter(c => c.has_audio && (!c.qa || !c.qa.status || c.qa.status === 'pending'));
             case 'no_audio':  return this.chunks.filter(c => !c.has_audio);
-            case 'qa_pass':   return this.chunks.filter(c => c.qa?.status === 'pass');
+            case 'sim_range': {
+                // Two-bound inclusive range. Defaults capture everything
+                // when the user hasn't picked numbers yet.
+                const lo = (opts.min ?? 0);
+                const hi = (opts.max ?? 1);
+                return this.chunks.filter(c => hasScore(c) && c.qa.score >= lo && c.qa.score <= hi);
+            }
             default:          return this.chunks;
         }
     }
@@ -237,9 +279,12 @@ class ContinuousPlayer {
         if (chunk?.scene_break_after) delayMs = 1500;
         if (chunk?.chapter_break_after) delayMs = 3000;
 
-        if (this.currentIdx < this.chunks.length - 1) {
+        // Auto-advance walks the *visible* list so playback stays inside
+        // whatever filter the user has set in the review pane.
+        const nxt = this._findNextVisible(this.currentIdx + 1);
+        if (nxt >= 0) {
             setTimeout(() => {
-                this.currentIdx++;
+                this.currentIdx = nxt;
                 this._skipToNextPlayable();
             }, delayMs);
         } else {
@@ -249,14 +294,18 @@ class ContinuousPlayer {
     }
 
     _skipToNextPlayable() {
+        // Find the next chunk that is both visible (in current filter)
+        // and has audio. Stop if none.
         while (this.currentIdx < this.chunks.length) {
-            if (this.chunks[this.currentIdx]?.has_audio) {
+            const c = this.chunks[this.currentIdx];
+            if (c?.has_audio && this._isVisible(this.currentIdx)) {
                 this.play();
                 return;
             }
-            this.currentIdx++;
+            const nxt = this._findNextVisible(this.currentIdx + 1);
+            if (nxt < 0) break;
+            this.currentIdx = nxt;
         }
-        // Reached end with no playable chunks
         this.state = 'stopped';
         this.onStateChange(this.state);
     }

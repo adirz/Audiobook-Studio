@@ -140,6 +140,16 @@ class QAThresholds(BaseModel):
     min_similarity: float = 0.85
     auto_pass: float = 0.95
     mode: str = "new"              # new = skip passing/override, all = recheck everything
+    chunk_ids: list[str] = []      # if non-empty, only these chunks are QA'd
+                                    # (overrides ``mode``).
+
+
+class ManualQAUpdate(BaseModel):
+    chunk_id: str
+    # "pass" / "fail" mark the chunk manually; "clear" drops the most
+    # recent manual override and reverts to whatever automatic QA
+    # produced (or unchecked if none).
+    status: str
 
 
 class GenQATestRequest(BaseModel):

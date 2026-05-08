@@ -1292,10 +1292,14 @@ def run_qa(slug: str, thresholds: QAThresholds = QAThresholds()):
     from app.pipeline.pronunciation import build_replacement_map
     pron_map = build_replacement_map(db)
 
-    # When mode="new" (default), skip chunks that already have a passing/override QA
-    # result for their current generation.  mode="all" re-checks everything.
+    # Explicit chunk_ids take precedence (e.g. the review UI "Run QA on
+    # current filter" button sends the visible chunks). Otherwise apply
+    # the mode-based selection: "new" skips chunks with an existing
+    # passing/override result, "all" re-checks everything.
     qa_chunk_ids: list[str] | None = None
-    if thresholds.mode == "new":
+    if thresholds.chunk_ids:
+        qa_chunk_ids = list(thresholds.chunk_ids)
+    elif thresholds.mode == "new":
         qa_chunk_ids = []
         for ch in db.get_chunks():
             gen = db.get_latest_generation(ch["id"])
@@ -1311,10 +1315,26 @@ def run_qa(slug: str, thresholds: QAThresholds = QAThresholds()):
 
     task_id = f"{slug}_qa"
     _task_progress[task_id] = {"current": 0, "total": 0, "status": "running"}
+    _task_controls[task_id] = {"stop": False, "pause": False}
+
+    def make_stop_check():
+        def stop_check():
+            ctrl = _task_controls.get(task_id, {})
+            # Block here while paused — qa_batch invokes this between
+            # chunks, so the user's Pause click takes effect after the
+            # current chunk finishes transcribing.
+            while ctrl.get("pause"):
+                import time
+                time.sleep(0.5)
+                ctrl = _task_controls.get(task_id, {})
+            return bool(ctrl.get("stop", False))
+        return stop_check
 
     def run_qa_batch():
+        import time as _t
         pass_count = 0
         fail_count = 0
+        started_at = _t.time()
 
         def on_progress(current, total, result):
             nonlocal pass_count, fail_count
@@ -1330,6 +1350,7 @@ def run_qa(slug: str, thresholds: QAThresholds = QAThresholds()):
                     "score": result["adjusted_score"],
                     "qa_status": result["status"],
                 },
+                "started_at": started_at,
             }
 
         summary = qa.qa_batch(
@@ -1338,9 +1359,12 @@ def run_qa(slug: str, thresholds: QAThresholds = QAThresholds()):
             threshold=threshold,
             pron_map=pron_map,
             progress_callback=on_progress,
+            stop_check=make_stop_check(),
         )
         _task_progress[task_id] = {
-            "status": "done", **{k: v for k, v in summary.items() if k != "results"}
+            "status": "done",
+            "started_at": started_at,
+            **{k: v for k, v in summary.items() if k != "results"},
         }
 
     if not _run_in_dedicated_thread(task_id, run_qa_batch):

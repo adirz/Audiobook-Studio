@@ -85,14 +85,20 @@ def split_into_chunks(text: str, max_words: int = DEFAULT_MAX_WORDS,
             groups.append(" ".join(buf).strip())
         return groups
 
-    # Build paragraph-like "units" for greedy packing; handle scene breaks
+    # Build paragraph-like "units" for greedy packing; handle scene breaks.
+    # The scene-break marker may carry the originating symbol —
+    # ``[SCENE_BREAK:♦]`` — so the chunk that ends a scene can record
+    # which symbol triggered the break (used by the Generate Audio
+    # "After scene break" filter to distinguish ♦ from * * *, etc.).
+    sb_re = re.compile(r"^\[SCENE_BREAK(?::(.*))?\]$")
     raw_paras = [p.strip() for p in text.split("\n")]
     units: list[dict] = []
     for para in raw_paras:
         if not para:
             continue
-        if para == "[SCENE_BREAK]":
-            units.append({"is_scene_break": True})
+        m = sb_re.match(para)
+        if m:
+            units.append({"is_scene_break": True, "symbol": m.group(1)})
             continue
 
         # split very long paragraphs into sentence groups that each fit
@@ -111,6 +117,9 @@ def split_into_chunks(text: str, max_words: int = DEFAULT_MAX_WORDS,
         if u.get("is_scene_break"):
             if chunks:
                 chunks[-1]["scene_break_after"] = True
+                # Stash the originating symbol on the chunk that ends
+                # the scene so it survives all the way to the DB.
+                chunks[-1]["scene_break_symbol"] = u.get("symbol")
             i += 1
             continue
 
@@ -263,6 +272,7 @@ def chunk_all_chapters(db: ProjectDB,
                 "scene_break_after": 1 if chunk["scene_break_after"] else 0,
                 "chapter_break_after": 1 if i == len(content_chunks) - 1 else 0,
                 "is_title_chunk": 0,
+                "scene_break_symbol": chunk.get("scene_break_symbol"),
             })
             global_idx += 1
 
