@@ -13,7 +13,6 @@ jumps within a single voice.
 
 import re
 import wave
-import struct
 import subprocess
 from pathlib import Path
 
@@ -37,66 +36,101 @@ def generate_silence(duration_ms: int, sample_rate: int) -> bytes:
     return b"\x00\x00" * num_samples  # 16-bit silence
 
 
-def crossfade_pcm(pcm_a: bytes, pcm_b: bytes, crossfade_ms: int,
-                  sample_rate: int) -> bytes:
-    """Crossfade between two PCM buffers.
+def _apply_fades(pcm: bytes, sample_rate: int,
+                 fade_in_ms: int, fade_out_ms: int) -> bytes:
+    """Apply equal-power (cos/sin) fade-in and/or fade-out to a chunk.
 
-    The last crossfade_ms of pcm_a fades out while the first
-    crossfade_ms of pcm_b fades in, overlapping.
+    Replaces the old "crossfade through silence" hack: the previous code
+    appended silence to the running buffer and then crossfaded the next
+    chunk's head against that silence, which is just a fade-in. Doing the
+    fade per chunk lets us stream the output to disk and produces clean,
+    click-free joins at boundaries.
     """
-    fade_samples = int(sample_rate * crossfade_ms / 1000)
+    if fade_in_ms <= 0 and fade_out_ms <= 0:
+        return pcm
+    try:
+        import numpy as np
+    except ImportError:
+        return pcm
 
-    if fade_samples == 0 or len(pcm_a) < fade_samples * 2 or len(pcm_b) < fade_samples * 2:
-        return pcm_a + pcm_b
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    n = len(samples)
+    if n == 0:
+        return pcm
 
-    # Convert to sample arrays
-    fmt = f"<{len(pcm_a)//2}h"
-    samples_a = list(struct.unpack(fmt, pcm_a))
+    if fade_in_ms > 0:
+        k = min(int(sample_rate * fade_in_ms / 1000), n)
+        if k > 0:
+            ramp = np.sin(np.linspace(0.0, np.pi / 2.0, k, dtype=np.float32))
+            samples[:k] *= ramp
+    if fade_out_ms > 0:
+        k = min(int(sample_rate * fade_out_ms / 1000), n)
+        if k > 0:
+            ramp = np.cos(np.linspace(0.0, np.pi / 2.0, k, dtype=np.float32))
+            samples[-k:] *= ramp
 
-    fmt = f"<{len(pcm_b)//2}h"
-    samples_b = list(struct.unpack(fmt, pcm_b))
-
-    # The overlap region
-    a_tail = samples_a[-fade_samples:]
-    b_head = samples_b[:fade_samples]
-
-    crossfaded = []
-    for i in range(fade_samples):
-        t = i / fade_samples  # 0 → 1
-        mixed = int(a_tail[i] * (1 - t) + b_head[i] * t)
-        mixed = max(-32768, min(32767, mixed))
-        crossfaded.append(mixed)
-
-    # Reconstruct
-    result_samples = samples_a[:-fade_samples] + crossfaded + samples_b[fade_samples:]
-    return struct.pack(f"<{len(result_samples)}h", *result_samples)
+    np.clip(samples, -32768.0, 32767.0, out=samples)
+    return samples.astype(np.int16).tobytes()
 
 
-def normalize_lufs(pcm: bytes, sample_rate: int,
-                   target_lufs: float = -16.0) -> bytes:
-    """Normalize audio to target LUFS using pyloudnorm."""
+def _measure_chunk_lufs(pcm: bytes, sample_rate: int) -> float | None:
+    """Integrated LUFS for one chunk, or None when measurement is unavailable."""
     try:
         import numpy as np
         import pyloudnorm as pyln
-
-        # Convert PCM to float array
-        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64) / 32768.0
-
-        meter = pyln.Meter(sample_rate)
-        current_lufs = meter.integrated_loudness(samples)
-
-        if current_lufs == float("-inf"):
-            return pcm  # silence, nothing to normalize
-
-        normalized = pyln.normalize.loudness(samples, current_lufs, target_lufs)
-
-        # Clip and convert back to int16
-        normalized = np.clip(normalized, -1.0, 1.0)
-        return (normalized * 32767).astype(np.int16).tobytes()
-
     except ImportError:
-        # pyloudnorm not available — skip normalization
+        return None
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64) / 32768.0
+    if samples.size == 0:
+        return None
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            lufs = pyln.Meter(sample_rate).integrated_loudness(samples)
+    except Exception:
+        return None
+    if lufs == float("-inf") or lufs != lufs:  # also catches NaN
+        return None
+    return float(lufs)
+
+
+def _book_gain_db(measurements: list[tuple[float | None, float]],
+                  target_lufs: float) -> float:
+    """Energy-weighted mean LUFS across chunks → global gain in dB.
+
+    Per-chunk normalization (the previous behavior) flattens dynamic
+    range — quiet passages get amplified to match loud ones, and any
+    breath / room tone in soft chunks comes up with the signal. Computing
+    one gain from a duration-weighted energy mean preserves the relative
+    loudness between chunks while still hitting the target on average.
+    """
+    import math
+    total_energy = 0.0
+    total_duration = 0.0
+    for lufs, duration in measurements:
+        if lufs is None or duration <= 0:
+            continue
+        total_energy += (10.0 ** (lufs / 10.0)) * duration
+        total_duration += duration
+    if total_duration <= 0 or total_energy <= 0:
+        return 0.0
+    book_lufs = 10.0 * math.log10(total_energy / total_duration)
+    return target_lufs - book_lufs
+
+
+def _apply_gain_db(pcm: bytes, gain_db: float) -> bytes:
+    """Apply a constant gain (in dB) to int16 PCM, clipping at int16 range."""
+    if abs(gain_db) < 0.01:
         return pcm
+    try:
+        import numpy as np
+    except ImportError:
+        return pcm
+    scale = 10.0 ** (gain_db / 20.0)
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) * scale
+    np.clip(samples, -32768.0, 32767.0, out=samples)
+    return samples.astype(np.int16).tobytes()
 
 
 # ─── Seam anomaly analysis ────────────────────────────────────────────
@@ -202,7 +236,8 @@ def analyze_seam(prev_pcm: bytes, curr_pcm: bytes,
 
 def merge_chunks(db: ProjectDB, chunk_ids: list[str],
                  output_path: Path,
-                 audio_settings: AudioSettings) -> tuple[str, list[dict]]:
+                 audio_settings: AudioSettings,
+                 progress_callback=None) -> tuple[str, list[dict]]:
     """Merge a sequence of chunks into a single WAV file.
 
     Returns ``(output_path, seam_reports)``. Each seam report includes
@@ -210,88 +245,127 @@ def merge_chunks(db: ProjectDB, chunk_ids: list[str],
     ``"scene"`` / ``"chapter"``), the analysis output from
     ``analyze_seam`` for raw chunk-vs-chunk boundaries, and any human
     warnings.
+
+    ``progress_callback(current, total)`` is called after each chunk is
+    processed (including skipped ones) so the caller can track progress.
+
+    Two passes:
+      1. Read every chunk, measure integrated LUFS + duration, then
+         compute one global gain. This avoids the per-chunk normalization
+         that flattened dynamic range.
+      2. Read every chunk again, apply the gain + small fades, and stream
+         frames straight into the output WAV. Memory stays O(one chunk)
+         instead of growing with the whole book.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     sample_rate = audio_settings.sample_rate
 
-    merged_pcm = b""
-    prev_chunk = None
-    prev_chunk_pcm = b""
-    seam_reports: list[dict] = []
-
-    for i, chunk_id in enumerate(chunk_ids):
+    # Resolve which chunks have usable audio. Store everything we'll need
+    # again in pass 2 so we don't have to re-query the DB per chunk.
+    valid: list[tuple[str, dict, str]] = []  # (chunk_id, chunk_row, wav_path)
+    for chunk_id in chunk_ids:
         chunk = db.get_chunk(chunk_id)
         gen = db.get_latest_generation(chunk_id)
-
-        if not gen or gen["status"] != "ok" or not gen.get("wav_path"):
+        if not chunk or not gen or gen.get("status") != "ok" or not gen.get("wav_path"):
             continue
+        valid.append((chunk_id, chunk, gen["wav_path"]))
 
-        pcm, sr = read_wav_pcm(gen["wav_path"])
-        assert sr == sample_rate, f"Sample rate mismatch: {sr} != {sample_rate}"
+    total = len(chunk_ids)
 
-        # Normalize this chunk
-        pcm = normalize_lufs(pcm, sample_rate, audio_settings.target_lufs)
+    # Pass 1 — measure each chunk's integrated loudness for the global gain.
+    measurements: list[tuple[float | None, float]] = []
+    for _, _, wav_path in valid:
+        pcm, sr = read_wav_pcm(wav_path)
+        if sr != sample_rate:
+            raise ValueError(f"Sample rate mismatch in {wav_path}: {sr} != {sample_rate}")
+        duration = len(pcm) / (2 * sample_rate)
+        measurements.append((_measure_chunk_lufs(pcm, sample_rate), duration))
 
-        if not merged_pcm:
-            merged_pcm = pcm
-        else:
-            # Decide silence/transition strategy by break type, and
-            # capture an analysis of the boundary while we still have
-            # the un-faded prev/curr buffers in hand.
-            if prev_chunk and prev_chunk.get("chapter_break_after"):
-                boundary = "chapter"
-            elif prev_chunk and prev_chunk.get("scene_break_after"):
-                boundary = "scene"
-            else:
-                boundary = "chunk"
+    gain_db = _book_gain_db(measurements, audio_settings.target_lufs)
 
-            same_voice = (
-                prev_chunk is not None and chunk is not None
-                and (prev_chunk.get("voice") or "") == (chunk.get("voice") or "")
-            )
-            analysis = analyze_seam(
-                prev_chunk_pcm, pcm, sample_rate,
-                same_voice=same_voice,
-                prev_chunk_id=prev_chunk["id"] if prev_chunk else "",
-                curr_chunk_id=chunk_id,
-            )
-            seam_reports.append({
-                "boundary": boundary,
-                "prev_chunk_id": prev_chunk["id"] if prev_chunk else "",
-                "curr_chunk_id": chunk_id,
-                "same_voice": same_voice,
-                **analysis,
-            })
+    # Pass 2 — stream-write the output.
+    seam_reports: list[dict] = []
+    prev_chunk: dict | None = None
+    prev_chunk_id = ""
+    prev_tail = b""  # last ~200 ms of previous chunk for seam analysis
+    seam_window_bytes = int(_SEAM_WINDOW_SEC * sample_rate * 2)
+    cf_ms = audio_settings.crossfade_ms
+    valid_set = {cid for cid, _, _ in valid}
 
-            if boundary == "chapter":
-                silence = generate_silence(audio_settings.chapter_break_silence_ms, sample_rate)
-                merged_pcm += silence + pcm
-            elif boundary == "scene":
-                silence = generate_silence(audio_settings.scene_break_silence_ms, sample_rate)
-                merged_pcm += silence + pcm
-            else:
-                # Plain chunk-to-chunk join: small silence + optional
-                # crossfade. With clean (no-overlap) chunks this is just
-                # a transition smoother, not a dedup mechanism.
-                if audio_settings.crossfade_ms > 0:
-                    silence = generate_silence(audio_settings.chunk_silence_ms, sample_rate)
-                    merged_pcm = crossfade_pcm(
-                        merged_pcm + silence, pcm,
-                        audio_settings.crossfade_ms, sample_rate,
-                    )
-                else:
-                    silence = generate_silence(audio_settings.chunk_silence_ms, sample_rate)
-                    merged_pcm += silence + pcm
-
-        prev_chunk = chunk
-        prev_chunk_pcm = pcm
-
-    # Write final WAV
     with wave.open(str(output_path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        wf.writeframes(merged_pcm)
+
+        idx = 0  # tracks position within ``chunk_ids`` for progress
+        for chunk_id, chunk, wav_path in valid:
+            # Advance the progress index past any skipped chunk_ids that
+            # came before this valid one.
+            while idx < len(chunk_ids) and chunk_ids[idx] not in valid_set:
+                idx += 1
+                if progress_callback:
+                    try:
+                        progress_callback(idx, total)
+                    except Exception:
+                        pass
+            idx += 1
+
+            pcm, _ = read_wav_pcm(wav_path)
+            pcm = _apply_gain_db(pcm, gain_db)
+            # Per-chunk fades in/out so every join is click-free without
+            # accumulating the whole book in RAM to do a true crossfade.
+            pcm = _apply_fades(pcm, sample_rate, cf_ms, cf_ms)
+
+            if prev_chunk is not None:
+                if prev_chunk.get("chapter_break_after"):
+                    boundary = "chapter"
+                    silence_ms = audio_settings.chapter_break_silence_ms
+                elif prev_chunk.get("scene_break_after"):
+                    boundary = "scene"
+                    silence_ms = audio_settings.scene_break_silence_ms
+                else:
+                    boundary = "chunk"
+                    silence_ms = audio_settings.chunk_silence_ms
+
+                same_voice = (prev_chunk.get("voice") or "") == (chunk.get("voice") or "")
+                head = pcm[:seam_window_bytes] if seam_window_bytes else pcm
+                analysis = analyze_seam(
+                    prev_tail, head, sample_rate,
+                    same_voice=same_voice,
+                    prev_chunk_id=prev_chunk_id,
+                    curr_chunk_id=chunk_id,
+                )
+                seam_reports.append({
+                    "boundary": boundary,
+                    "prev_chunk_id": prev_chunk_id,
+                    "curr_chunk_id": chunk_id,
+                    "same_voice": same_voice,
+                    **analysis,
+                })
+
+                if silence_ms > 0:
+                    wf.writeframes(generate_silence(silence_ms, sample_rate))
+
+            wf.writeframes(pcm)
+
+            prev_tail = pcm[-seam_window_bytes:] if seam_window_bytes and len(pcm) >= seam_window_bytes else pcm
+            prev_chunk = chunk
+            prev_chunk_id = chunk_id
+
+            if progress_callback:
+                try:
+                    progress_callback(idx, total)
+                except Exception:
+                    pass
+
+        # Flush progress for any trailing skipped chunk_ids.
+        while idx < total:
+            idx += 1
+            if progress_callback:
+                try:
+                    progress_callback(idx, total)
+                except Exception:
+                    pass
 
     return str(output_path), seam_reports
 
@@ -307,31 +381,51 @@ def _summarize_seams(seam_reports: list[dict]) -> dict:
 
 
 def export_by_chapter(db: ProjectDB, export_dir: Path,
-                      audio_settings: AudioSettings) -> dict:
+                      audio_settings: AudioSettings,
+                      progress_callback=None) -> dict:
     """Export one file per chapter. Returns paths plus seam summary."""
     export_dir.mkdir(parents=True, exist_ok=True)
     chapters = db.get_chapters()
-    files: list[str] = []
-    all_seams: list[dict] = []
 
+    # Pre-compute per-chapter chunk ID lists so we know the grand total.
+    chapter_data = []
+    grand_total = 0
     for ch in chapters:
         chunks = db.get_chunks(chapter_id=ch["id"])
         if not chunks:
             continue
+        cids = [c["id"] for c in chunks]
+        chapter_data.append((ch, cids))
+        grand_total += len(cids)
 
-        chunk_ids = [c["id"] for c in chunks]
+    files: list[str] = []
+    all_seams: list[dict] = []
+    offset = 0
+
+    for ch, cids in chapter_data:
+        ch_offset = offset
+
+        def _make_cb(o):
+            def _cb(current, _total):
+                if progress_callback:
+                    progress_callback(o + current, grand_total)
+            return _cb
+
         filename = f"ch{ch['idx']:03d}_{_slugify(ch['title'])}.wav"
         output_path = export_dir / filename
-
-        path, seam_reports = merge_chunks(db, chunk_ids, output_path, audio_settings)
+        path, seam_reports = merge_chunks(
+            db, cids, output_path, audio_settings, _make_cb(ch_offset)
+        )
         files.append(path)
         all_seams.extend(seam_reports)
+        offset += len(cids)
 
     return {"files": files, **_summarize_seams(all_seams)}
 
 
 def export_full_book(db: ProjectDB, export_dir: Path,
-                     audio_settings: AudioSettings) -> dict:
+                     audio_settings: AudioSettings,
+                     progress_callback=None) -> dict:
     """Export the entire book as a single file. Returns path + seam summary."""
     export_dir.mkdir(parents=True, exist_ok=True)
     chunks = db.get_chunks()
@@ -340,7 +434,9 @@ def export_full_book(db: ProjectDB, export_dir: Path,
     book_name = db.get_meta("project_name") or "audiobook"
     output_path = export_dir / f"{_slugify(book_name)}.wav"
 
-    path, seam_reports = merge_chunks(db, chunk_ids, output_path, audio_settings)
+    path, seam_reports = merge_chunks(
+        db, chunk_ids, output_path, audio_settings, progress_callback
+    )
 
     # Convert to other formats if requested
     if audio_settings.export_format == "mp3":

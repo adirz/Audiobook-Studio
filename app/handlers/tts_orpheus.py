@@ -1,10 +1,10 @@
 """Orpheus TTS engine handler."""
 
 import io
+import uuid
 import wave
 import struct
 from typing import Iterator
-import threading
 
 from app.handlers.tts_base import TTSHandler
 from app.models import Voice, Tag, ResourceReq
@@ -38,9 +38,6 @@ class OrpheusTTSHandler(TTSHandler):
     def __init__(self):
         self._model = None
         self._config = {}
-        # Serialize generation calls to avoid upstream engines that require
-        # unique request IDs per in-flight request (prevents "Request req-001 already exists.")
-        self._gen_lock = threading.Lock()
 
     def get_name(self) -> str:
         return "Orpheus TTS (Local)"
@@ -151,10 +148,15 @@ class OrpheusTTSHandler(TTSHandler):
         # site-packages.
         try:
             from orpheus_tts import OrpheusModel as _OrpheusModel
-        except Exception:
-            # Fall back to the direct import used above; let the original
-            # import/import-time errors surface to the caller.
-            from orpheus_tts import OrpheusModel as _OrpheusModel
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "804" in msg or "forward compatibility" in msg or "version mismatch" in msg:
+                raise RuntimeError(
+                    "CUDA driver/library version mismatch — the NVIDIA driver was "
+                    "updated but the system has not been rebooted yet. "
+                    "Please reboot to reload the kernel module, then try again."
+                ) from exc
+            raise
 
         orig_setup = getattr(_OrpheusModel, "_setup_engine", None)
         cfg = config or {}
@@ -195,12 +197,19 @@ class OrpheusTTSHandler(TTSHandler):
 
     def unload_model(self):
         if self._model is not None:
-            # Best-effort cleanup — vLLM doesn't have a clean unload
+            # Best-effort cleanup — vLLM doesn't have a clean unload.
+            # gc.collect() is critical: vLLM's AsyncLLMEngine holds references
+            # in background threads; without forcing GC the CUDA memory stays
+            # allocated even after `del self._model`, which prevents the STT
+            # engine from loading after a TTS generation run.
             del self._model
             self._model = None
             try:
+                import gc
+                gc.collect()
                 import torch
                 torch.cuda.empty_cache()
+                gc.collect()
             except Exception:
                 pass
 
@@ -227,21 +236,24 @@ class OrpheusTTSHandler(TTSHandler):
 
         prompt = text
 
-        # Serialize calls to the underlying model to avoid duplicate request
-        # id collisions in the underlying engine implementation.
-        with self._gen_lock:
-            tokens = self._model.generate_speech(
-                prompt=prompt,
-                voice=voice,
-                max_tokens=max_tokens,
-                repetition_penalty=rep_penalty,
-                temperature=temperature,
-            )
+        # Unique request_id per call lets vLLM batch concurrent requests
+        # in flight. The default in orpheus_tts is the literal "req-001",
+        # so two simultaneous calls would crash with
+        # "Request req-001 already exists." (which is why this used to be
+        # serialized behind a lock). With a UUID we can drop that lock and
+        # recover vLLM's batched throughput.
+        tokens = self._model.generate_speech(
+            prompt=prompt,
+            voice=voice,
+            request_id=f"req-{uuid.uuid4().hex}",
+            max_tokens=max_tokens,
+            repetition_penalty=rep_penalty,
+            temperature=temperature,
+        )
 
-            # Collect all audio chunks into a single PCM buffer
-            pcm_buffer = bytearray()
-            for audio_chunk in tokens:
-                pcm_buffer.extend(audio_chunk)
+        pcm_buffer = bytearray()
+        for audio_chunk in tokens:
+            pcm_buffer.extend(audio_chunk)
 
         return bytes(pcm_buffer)
 
@@ -266,16 +278,16 @@ class OrpheusTTSHandler(TTSHandler):
 
         prompt = text
 
-        # For streaming, also serialize the entire generation so multiple
-        # concurrent requests don't collide in the underlying engine.
-        with self._gen_lock:
-            tokens = self._model.generate_speech(
-                prompt=prompt,
-                voice=voice,
-                max_tokens=max_tokens,
-                repetition_penalty=rep_penalty,
-                temperature=temperature,
-            )
+        # See generate(): unique request_id per call enables concurrent
+        # batching inside vLLM.
+        tokens = self._model.generate_speech(
+            prompt=prompt,
+            voice=voice,
+            request_id=f"req-{uuid.uuid4().hex}",
+            max_tokens=max_tokens,
+            repetition_penalty=rep_penalty,
+            temperature=temperature,
+        )
 
-            for audio_chunk in tokens:
-                yield audio_chunk
+        for audio_chunk in tokens:
+            yield audio_chunk

@@ -103,15 +103,56 @@ def head_export(slug: str, filename: str):
 
 # ─── Review / flagging (Steps 13-14) ──────────────────────────────────
 
+# Common CTEs for "latest generation per chunk" and "latest QA per
+# generation". Used by both /review and /review/chapters to replace the
+# old per-chunk SELECT loops (which were ~3 round trips per chunk =
+# 15k+ queries for a 5,000-chunk book) with a single joined query.
+_LATEST_CTES = """
+    WITH latest_gen AS (
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY chunk_id ORDER BY attempt DESC, id DESC
+            ) AS _rn FROM generations
+        ) WHERE _rn = 1
+    ),
+    latest_qa AS (
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY generation_id ORDER BY id DESC
+            ) AS _rn FROM qa_results
+        ) WHERE _rn = 1
+    )
+"""
+
+
 @router.get("/{slug}/review")
 def get_review_data(slug: str, chapter_id: int = None):
     """Get all chunks with their generation/QA status for review."""
     db = get_project_db(slug)
 
-    if chapter_id is not None:
-        chunks = db.get_chunks(chapter_id=chapter_id)
-    else:
-        chunks = db.get_chunks()
+    where = "WHERE c.chapter_id = ?" if chapter_id is not None else ""
+    params: tuple = (chapter_id,) if chapter_id is not None else ()
+    sql = _LATEST_CTES + f"""
+        SELECT c.*,
+            g.id            AS gen_id,
+            g.attempt       AS gen_attempt,
+            g.status        AS gen_status,
+            g.wav_path      AS gen_wav_path,
+            g.duration_sec  AS gen_duration_sec,
+            g.gen_time_sec  AS gen_gen_time_sec,
+            g.error_msg     AS gen_error_msg,
+            g.params_json   AS gen_params_json,
+            g.created_at    AS gen_created_at,
+            qa.id              AS qa_id,
+            qa.similarity_score AS qa_score,
+            qa.status          AS qa_status
+        FROM chunks c
+        LEFT JOIN latest_gen g  ON g.chunk_id = c.id
+        LEFT JOIN latest_qa qa  ON qa.generation_id = g.id
+        {where}
+        ORDER BY c.global_index, c.local_index
+    """
+    rows = db.fetchall(sql, params)
 
     # Compute a scene index per chunk on the fly. The scene resets at
     # chapter boundaries and increments at every chunk whose
@@ -126,7 +167,7 @@ def get_review_data(slug: str, chapter_id: int = None):
     current_chapter = None
     current_scene = 1
     last_sb_symbol: str | None = None
-    for ch in chunks:
+    for ch in rows:
         if ch.get("chapter_id") != current_chapter:
             current_chapter = ch.get("chapter_id")
             current_scene = 1
@@ -137,31 +178,55 @@ def get_review_data(slug: str, chapter_id: int = None):
             current_scene += 1
             last_sb_symbol = ch.get("scene_break_symbol")
 
-    enriched = []
-    for ch in chunks:
-        gen = db.get_latest_generation(ch["id"])
-        flags = db.fetchall(
-            "SELECT * FROM user_flags WHERE chunk_id=? AND resolved=0",
-            (ch["id"],),
-        )
-        qa_result = db.fetchone(
-            """SELECT * FROM qa_results
-               WHERE chunk_id=? ORDER BY id DESC LIMIT 1""",
-            (ch["id"],),
-        )
+    # One batched fetch for unresolved flags across every chunk in scope —
+    # SQLite caps parameter lists at 999 by default so chunk into 500s.
+    chunk_ids = [r["id"] for r in rows]
+    flags_by_chunk: dict[str, list[dict]] = {}
+    for i in range(0, len(chunk_ids), 500):
+        batch = chunk_ids[i:i + 500]
+        placeholders = ",".join("?" * len(batch))
+        for f in db.fetchall(
+            f"SELECT * FROM user_flags WHERE resolved=0 AND chunk_id IN ({placeholders})",
+            tuple(batch),
+        ):
+            flags_by_chunk.setdefault(f["chunk_id"], []).append(f)
 
+    enriched = []
+    chunk_keys = {
+        "id", "chapter_id", "local_index", "global_index",
+        "original_text", "cleaned_text", "tagged_text", "pron_text",
+        "scene_break_after", "chapter_break_after", "word_count",
+        "is_title_chunk", "voice", "scene_break_symbol", "pron_text_locked",
+    }
+    for r in rows:
+        gen = None
+        if r.get("gen_id") is not None:
+            gen = {
+                "id": r["gen_id"],
+                "chunk_id": r["id"],
+                "attempt": r.get("gen_attempt"),
+                "status": r.get("gen_status"),
+                "wav_path": r.get("gen_wav_path"),
+                "duration_sec": r.get("gen_duration_sec"),
+                "gen_time_sec": r.get("gen_gen_time_sec"),
+                "error_msg": r.get("gen_error_msg"),
+                "params_json": r.get("gen_params_json"),
+                "created_at": r.get("gen_created_at"),
+            }
+        qa = None
+        if r.get("qa_id") is not None:
+            qa = {"score": r.get("qa_score"), "status": r.get("qa_status")}
+
+        chunk_only = {k: r.get(k) for k in chunk_keys if k in r}
         enriched.append({
-            **ch,
+            **chunk_only,
             "generation": gen,
-            "qa": {
-                "score": qa_result["similarity_score"] if qa_result else None,
-                "status": qa_result["status"] if qa_result else None,
-            } if qa_result else None,
-            "flags": flags,
+            "qa": qa,
+            "flags": flags_by_chunk.get(r["id"], []),
             "has_audio": bool(gen and gen["status"] == "ok"),
-            "audio_url": f"/api/audio/{slug}/chunk/{ch['id']}" if gen and gen["status"] == "ok" else None,
-            "scene_index": scene_by_chunk.get(ch["id"], 1),
-            "scene_break_symbol_before": sb_before_by_chunk.get(ch["id"]),
+            "audio_url": f"/api/audio/{slug}/chunk/{r['id']}" if gen and gen["status"] == "ok" else None,
+            "scene_index": scene_by_chunk.get(r["id"], 1),
+            "scene_break_symbol_before": sb_before_by_chunk.get(r["id"]),
         })
 
     return enriched
@@ -171,44 +236,28 @@ def get_review_data(slug: str, chapter_id: int = None):
 def get_chapter_list(slug: str):
     """Get chapter list with summary stats for navigation."""
     db = get_project_db(slug)
-    chapters = db.get_chapters()
-
-    result = []
-    for ch in chapters:
-        chunks = db.get_chunks(chapter_id=ch["id"])
-        total = len(chunks)
-        generated = 0
-        qa_passed = 0
-        flagged = 0
-
-        for chunk in chunks:
-            gen = db.get_latest_generation(chunk["id"])
-            if gen and gen["status"] == "ok":
-                generated += 1
-            qa_r = db.fetchone(
-                "SELECT status FROM qa_results WHERE chunk_id=? ORDER BY id DESC LIMIT 1",
-                (chunk["id"],),
-            )
-            if qa_r and qa_r["status"] == "pass":
-                qa_passed += 1
-            flags = db.fetchall(
-                "SELECT id FROM user_flags WHERE chunk_id=? AND resolved=0",
-                (chunk["id"],),
-            )
-            if flags:
-                flagged += 1
-
-        result.append({
-            "id": ch["id"],
-            "idx": ch["idx"],
-            "title": ch["title"],
-            "total_chunks": total,
-            "generated": generated,
-            "qa_passed": qa_passed,
-            "flagged": flagged,
-        })
-
-    return result
+    sql = _LATEST_CTES + """
+        SELECT
+            ch.id   AS id,
+            ch.idx  AS idx,
+            ch.title AS title,
+            COALESCE(COUNT(c.id), 0)                                                AS total_chunks,
+            COALESCE(SUM(CASE WHEN g.status = 'ok' THEN 1 ELSE 0 END), 0)           AS generated,
+            COALESCE(SUM(CASE WHEN qa.status = 'pass' THEN 1 ELSE 0 END), 0)        AS qa_passed,
+            COALESCE(SUM(CASE WHEN flag_counts.cnt > 0 THEN 1 ELSE 0 END), 0)       AS flagged
+        FROM chapters ch
+        LEFT JOIN chunks c     ON c.chapter_id = ch.id
+        LEFT JOIN latest_gen g ON g.chunk_id   = c.id
+        LEFT JOIN latest_qa qa ON qa.generation_id = g.id
+        LEFT JOIN (
+            SELECT chunk_id, COUNT(*) AS cnt
+            FROM user_flags WHERE resolved = 0
+            GROUP BY chunk_id
+        ) flag_counts ON flag_counts.chunk_id = c.id
+        GROUP BY ch.id, ch.idx, ch.title
+        ORDER BY ch.idx
+    """
+    return db.fetchall(sql)
 
 
 @router.post("/{slug}/review/qa-status")
@@ -272,7 +321,8 @@ def edit_chunk_tts_text(slug: str, chunk_id: str, payload: dict):
     if not chunk:
         raise HTTPException(404, "Chunk not found")
     text = (payload.get("text") or "").strip() or None
-    db.execute("UPDATE chunks SET pron_text=? WHERE id=?", (text, chunk_id))
+    locked = 1 if text else 0
+    db.execute("UPDATE chunks SET pron_text=?, pron_text_locked=? WHERE id=?", (text, locked, chunk_id))
     db.commit()
     return {"status": "updated", "chunk_id": chunk_id, "cleared": text is None}
 

@@ -2,6 +2,8 @@
 
 import sqlite3
 import json
+import threading
+from functools import wraps
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any
@@ -135,17 +137,36 @@ CREATE INDEX IF NOT EXISTS idx_flags_chunk ON user_flags(chunk_id);
 """
 
 
+def _locked(method):
+    """Hold the per-DB RLock for the duration of the call.
+
+    sqlite3.Connection is not thread-safe even in WAL mode with
+    check_same_thread=False — concurrent execute/commit calls from
+    different threads (HTTP handlers vs background workers) corrupt
+    cursor state and can interleave a logical multi-statement operation.
+    Re-entrant so cross-method calls within the same thread don't
+    deadlock.
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class ProjectDB:
     """Wrapper around a per-project SQLite database."""
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._lock = threading.RLock()
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
 
+    @_locked
     def _init_schema(self):
         self.conn.executescript(SCHEMA_SQL)
         # Migrate: add is_title_chunk column to existing databases
@@ -174,6 +195,13 @@ class ProjectDB:
             self.conn.execute(
                 "ALTER TABLE chunks ADD COLUMN scene_break_symbol TEXT"
             )
+        # Migrate: flag that the user manually edited pron_text from the
+        # review screen. When set, apply_all_pronunciation skips this chunk
+        # so the edit is not overwritten on the next generate run.
+        if "pron_text_locked" not in cols:
+            self.conn.execute(
+                "ALTER TABLE chunks ADD COLUMN pron_text_locked INTEGER DEFAULT 0"
+            )
         # Set schema version if new
         existing = self.get_meta("schema_version")
         if existing is None:
@@ -181,17 +209,20 @@ class ProjectDB:
             self.set_meta("current_step", "new")
         self.conn.commit()
 
+    @_locked
     def close(self):
         self.conn.close()
 
     # -- Meta helpers --
 
+    @_locked
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute(
             "SELECT value FROM project_meta WHERE key=?", (key,)
         ).fetchone()
         return row["value"] if row else None
 
+    @_locked
     def set_meta(self, key: str, value: str):
         self.conn.execute(
             "INSERT OR REPLACE INTO project_meta (key, value) VALUES (?, ?)",
@@ -201,25 +232,31 @@ class ProjectDB:
 
     # -- Generic helpers --
 
+    @_locked
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
 
+    @_locked
     def executemany(self, sql: str, params_list: list) -> sqlite3.Cursor:
         return self.conn.executemany(sql, params_list)
 
+    @_locked
     def commit(self):
         self.conn.commit()
 
+    @_locked
     def fetchone(self, sql: str, params: tuple = ()) -> dict | None:
         row = self.conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
+    @_locked
     def fetchall(self, sql: str, params: tuple = ()) -> list[dict]:
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     # -- Chapter operations --
 
+    @_locked
     def insert_chapters(self, chapters: list[dict]):
         self.executemany(
             "INSERT INTO chapters (idx, title, raw_text) VALUES (?, ?, ?)",
@@ -227,9 +264,11 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def get_chapters(self) -> list[dict]:
         return self.fetchall("SELECT * FROM chapters ORDER BY idx")
 
+    @_locked
     def update_chapter_cleaned(self, chapter_id: int, cleaned_text: str):
         self.execute(
             "UPDATE chapters SET cleaned_text=?, status='cleaned' WHERE id=?",
@@ -237,6 +276,7 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def update_chapter_narration_title(self, chapter_id: int, narration_title):
         """Set the narration title used for the chapter's title audio chunk.
 
@@ -252,6 +292,7 @@ class ProjectDB:
 
     # -- Symbol operations --
 
+    @_locked
     def insert_symbols(self, symbols: list[dict]):
         for sym in symbols:
             self.execute(
@@ -260,6 +301,7 @@ class ProjectDB:
             )
         self.commit()
 
+    @_locked
     def get_symbols(self, undecided_only: bool = False) -> list[dict]:
         if undecided_only:
             return self.fetchall(
@@ -267,6 +309,7 @@ class ProjectDB:
             )
         return self.fetchall("SELECT * FROM symbols")
 
+    @_locked
     def update_symbol(self, symbol_id: int, is_scene_break: bool):
         self.execute(
             "UPDATE symbols SET is_scene_break=?, user_decided=1 WHERE id=?",
@@ -276,6 +319,7 @@ class ProjectDB:
 
     # -- Chunk operations --
 
+    @_locked
     def insert_chunks(self, chunks: list[dict]):
         # Perform per-row insert with fallback to update when a chunk ID
         # already exists. This makes chunking idempotent / re-runnable
@@ -317,6 +361,7 @@ class ProjectDB:
                 )
         self.commit()
 
+    @_locked
     def get_chunks(self, chapter_id: int | None = None) -> list[dict]:
         # Tiebreaker on local_index: title chunks (local_index=-1) inserted
         # by /title-chunks/refresh share the global_index of the first
@@ -329,9 +374,11 @@ class ProjectDB:
             )
         return self.fetchall("SELECT * FROM chunks ORDER BY global_index, local_index")
 
+    @_locked
     def get_chunk(self, chunk_id: str) -> dict | None:
         return self.fetchone("SELECT * FROM chunks WHERE id=?", (chunk_id,))
 
+    @_locked
     def update_chunk_tagged(self, chunk_id: str, tagged_text: str):
         self.execute(
             "UPDATE chunks SET tagged_text=? WHERE id=?",
@@ -339,6 +386,7 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def update_chunk_pron(self, chunk_id: str, pron_text: str):
         self.execute(
             "UPDATE chunks SET pron_text=? WHERE id=?",
@@ -346,6 +394,7 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def update_chunk_voice(self, chunk_id: str, voice):
         """Set per-chunk voice override. Pass None to clear the override."""
         self.execute(
@@ -354,6 +403,7 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def bulk_update_chunk_voice(self, chunk_ids: list[str], voice):
         """Set the same voice override on many chunks at once."""
         if not chunk_ids:
@@ -367,6 +417,7 @@ class ProjectDB:
 
     # -- Pronunciation operations --
 
+    @_locked
     def insert_pron_entry(self, word: str, frequency: int, example_chunk_id: str,
                           example_context: str, type_tag: str = "") -> int:
         cur = self.execute(
@@ -378,6 +429,7 @@ class ProjectDB:
         self.commit()
         return cur.lastrowid
 
+    @_locked
     def get_pron_entries(self, status: str | None = None) -> list[dict]:
         if status:
             return self.fetchall(
@@ -388,12 +440,14 @@ class ProjectDB:
             "SELECT * FROM pron_entries ORDER BY frequency DESC"
         )
 
+    @_locked
     def update_pron_entry(self, entry_id: int, **kwargs):
         sets = ", ".join(f"{k}=?" for k in kwargs)
         vals = list(kwargs.values()) + [entry_id]
         self.execute(f"UPDATE pron_entries SET {sets} WHERE id=?", tuple(vals))
         self.commit()
 
+    @_locked
     def insert_pron_attempt(self, entry_id: int, attempt_num: int,
                             phonetic: str, audio_path: str) -> int:
         cur = self.execute(
@@ -405,6 +459,7 @@ class ProjectDB:
         self.commit()
         return cur.lastrowid
 
+    @_locked
     def choose_pron_attempt(self, attempt_id: int):
         """Mark one attempt as chosen, unmark others for same entry."""
         row = self.fetchone(
@@ -422,6 +477,7 @@ class ProjectDB:
 
     # -- Location overrides --
 
+    @_locked
     def insert_location_override(self, word: str, phonetic: str,
                                  chunk_id: str, word_offset: int = None,
                                  notes: str = ""):
@@ -433,6 +489,7 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def get_location_overrides(self, chunk_id: str = None) -> list[dict]:
         if chunk_id:
             return self.fetchall(
@@ -443,6 +500,7 @@ class ProjectDB:
 
     # -- Generation operations --
 
+    @_locked
     def insert_generation(self, chunk_id: str, attempt: int,
                           params: dict) -> int:
         cur = self.execute(
@@ -453,6 +511,7 @@ class ProjectDB:
         self.commit()
         return cur.lastrowid
 
+    @_locked
     def update_generation(self, gen_id: int, **kwargs):
         if "params" in kwargs:
             kwargs["params_json"] = json.dumps(kwargs.pop("params"))
@@ -461,6 +520,7 @@ class ProjectDB:
         self.execute(f"UPDATE generations SET {sets} WHERE id=?", tuple(vals))
         self.commit()
 
+    @_locked
     def get_latest_generation(self, chunk_id: str) -> dict | None:
         # Tiebreaker on id DESC: if two rows share the same attempt number
         # (can happen after an interrupted run that's been retried), the
@@ -471,6 +531,7 @@ class ProjectDB:
             (chunk_id,),
         )
 
+    @_locked
     def reset_stale_generations(self) -> int:
         """Mark any 'generating' or 'pending' rows as 'error'.
 
@@ -489,6 +550,7 @@ class ProjectDB:
         self.commit()
         return cur.rowcount
 
+    @_locked
     def get_generations(self, chunk_id: str = None,
                         status: str = None) -> list[dict]:
         sql = "SELECT * FROM generations WHERE 1=1"
@@ -504,6 +566,7 @@ class ProjectDB:
 
     # -- QA operations --
 
+    @_locked
     def insert_qa_result(self, chunk_id: str, gen_id: int,
                          transcribed: str, score: float,
                          word_diff: list, status: str = None) -> int:
@@ -526,6 +589,7 @@ class ProjectDB:
     # the marker the system uses to tell "manually marked" rows apart
     # from automatic Whisper-driven ones (and is what ``clear_manual_qa``
     # looks for when reverting).
+    @_locked
     def set_manual_qa_status(self, chunk_id: str, status: str) -> int:
         gen = self.get_latest_generation(chunk_id)
         gen_id = gen["id"] if gen else 0
@@ -539,6 +603,7 @@ class ProjectDB:
         self.commit()
         return cur.lastrowid
 
+    @_locked
     def clear_manual_qa(self, chunk_id: str) -> bool:
         """Drop the most recent manual override row, if any.
 
@@ -558,6 +623,7 @@ class ProjectDB:
 
     # -- User flags --
 
+    @_locked
     def insert_flag(self, chunk_id: str, flag_type: str,
                     word_range: str = None, notes: str = ""):
         self.execute(
@@ -567,6 +633,7 @@ class ProjectDB:
         )
         self.commit()
 
+    @_locked
     def get_flags(self, resolved: bool = None) -> list[dict]:
         if resolved is not None:
             return self.fetchall(
@@ -575,6 +642,7 @@ class ProjectDB:
             )
         return self.fetchall("SELECT * FROM user_flags")
 
+    @_locked
     def resolve_flag(self, flag_id: int):
         self.execute(
             "UPDATE user_flags SET resolved=1 WHERE id=?", (flag_id,)
@@ -583,6 +651,7 @@ class ProjectDB:
 
     # -- Tagging config --
 
+    @_locked
     def save_tagging_config(self, prompt: str, approved: bool = False) -> int:
         cur = self.execute(
             "INSERT INTO tagging_config (system_prompt, user_approved) VALUES (?, ?)",
@@ -591,6 +660,7 @@ class ProjectDB:
         self.commit()
         return cur.lastrowid
 
+    @_locked
     def get_tagging_config(self) -> dict | None:
         return self.fetchone(
             "SELECT * FROM tagging_config ORDER BY id DESC LIMIT 1"

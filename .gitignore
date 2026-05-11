@@ -59,6 +59,9 @@ hypothesis/
 # Logs
 *.log
 
+# ToDo files
+AUDIT.md
+
 # Local settings
 local_settings.py
 

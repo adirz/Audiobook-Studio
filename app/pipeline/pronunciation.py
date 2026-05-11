@@ -143,11 +143,16 @@ def apply_pronunciation(text: str, pron_map: dict[str, str],
 
 
 def apply_all_pronunciation(db: ProjectDB):
-    """Apply pronunciation substitutions to all chunks, storing results."""
+    """Apply pronunciation substitutions to all chunks, storing results.
+
+    Skips chunks where pron_text_locked=1 (user manually edited TTS text).
+    """
     pron_map = build_replacement_map(db)
     chunks = db.get_chunks()
 
     for chunk in chunks:
+        if chunk.get("pron_text_locked"):
+            continue
         overrides = db.get_location_overrides(chunk["id"])
         source = chunk.get("tagged_text") or chunk["original_text"]
         pron_text = apply_pronunciation(source, pron_map, overrides)

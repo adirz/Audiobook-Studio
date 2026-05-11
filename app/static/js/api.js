@@ -33,15 +33,57 @@ const API = {
         return res.json();
     },
 
-    // Poll a background task until done
+    // Watch a background task until done. Prefers Server-Sent Events
+    // (sub-second push updates, one persistent connection) and falls
+    // back to interval polling if SSE isn't available or fails before
+    // any data arrives.
     async pollTask(slug, taskId, onProgress, intervalMs = 1500) {
         const fullId = taskId.startsWith(slug) ? taskId : `${slug}_${taskId}`;
-        while (true) {
-            const data = await this.get(`/api/pipeline/${slug}/task/${fullId}`);
-            if (onProgress) onProgress(data);
-            if (data.status === 'done' || data.status === 'error') return data;
-            await new Promise(r => setTimeout(r, intervalMs));
-        }
+
+        const pollFallback = async () => {
+            while (true) {
+                const data = await this.get(`/api/pipeline/${slug}/task/${fullId}`);
+                if (onProgress) onProgress(data);
+                if (data.status === 'done' || data.status === 'error') return data;
+                await new Promise(r => setTimeout(r, intervalMs));
+            }
+        };
+
+        if (typeof EventSource === 'undefined') return pollFallback();
+
+        const sseResult = await new Promise((resolve) => {
+            let es;
+            try {
+                es = new EventSource(`/api/pipeline/${slug}/task/${fullId}/stream`);
+            } catch (_) {
+                resolve(null);
+                return;
+            }
+            let lastData = null;
+            es.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    lastData = data;
+                    if (onProgress) onProgress(data);
+                    if (data.status === 'done' || data.status === 'error') {
+                        es.close();
+                        resolve(data);
+                    }
+                } catch (_) { /* ignore parse errors */ }
+            };
+            es.addEventListener('not_found', () => {
+                es.close();
+                resolve(null);
+            });
+            es.onerror = () => {
+                es.close();
+                // Fall back to polling if SSE failed before delivering anything.
+                resolve(lastData);
+            };
+        });
+
+        if (sseResult) return sseResult;
+        return pollFallback();
     },
 };
 

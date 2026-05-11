@@ -7,6 +7,8 @@ and parameter variation on failure.
 import wave
 import time
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.database import ProjectDB
@@ -61,11 +63,11 @@ def generate_chunk(tts: TTSHandler, db: ProjectDB,
         existing = db.get_generations(chunk_id=chunk["id"])
         attempt = len(existing) + 1
 
-    # Register the generation attempt
+    # Register the generation attempt — include voice so QA/review can verify
     gen_id = db.insert_generation(
         chunk_id=chunk["id"],
         attempt=attempt,
-        params=params or {},
+        params={"voice": voice, **(params or {})},
     )
 
     db.update_generation(gen_id, status="generating")
@@ -172,13 +174,21 @@ def generate_batch(tts: TTSHandler, db: ProjectDB,
                    max_retries: int = 3,
                    params: dict | None = None,
                    progress_callback=None,
-                   stop_check=None) -> dict:
+                   stop_check=None,
+                   concurrency: int = 1) -> dict:
     """Generate audio for multiple chunks (or all pending).
 
     Args:
         chunk_ids: Specific chunks to generate. None = all without successful generation.
-        progress_callback: Called with (current, total, result_dict).
+        progress_callback: Called with (completed_count, total, result_dict).
+            With ``concurrency > 1`` the count reflects completions, not
+            submission order, so it remains monotonic.
         stop_check: Callable returning True if we should stop (graceful interrupt).
+        concurrency: How many chunks to submit to the TTS engine in
+            parallel. The Orpheus handler dropped its serializing lock and
+            assigns a unique request_id per call, so vLLM can batch
+            multiple requests for higher GPU utilization. Memory scales
+            with concurrency (each request has its own KV cache).
 
     Returns summary dict.
     """
@@ -198,21 +208,25 @@ def generate_batch(tts: TTSHandler, db: ProjectDB,
                 chunks.append(ch)
 
     total = len(chunks)
-    ok_count = 0
-    error_count = 0
-    results = []
+    state_lock = threading.Lock()
+    state = {"completed": 0, "ok": 0, "errors": 0}
+    results: list[dict] = []
 
-    for i, chunk in enumerate(chunks):
+    def fire(event, count, payload):
+        if not progress_callback:
+            return
+        try:
+            progress_callback(count, total, {"status": event, **payload})
+        except Exception:
+            pass
+
+    def run_one(chunk):
         if stop_check and stop_check():
-            break
+            return {"chunk_id": chunk["id"], "status": "stopped"}
 
-        # Notify caller which chunk we're about to generate so UIs can
-        # display a "currently generating" indicator.
-        if progress_callback:
-            try:
-                progress_callback(i + 1, total, {"status": "starting", "chunk_id": chunk["id"]})
-            except Exception:
-                pass
+        with state_lock:
+            cur = state["completed"]
+        fire("starting", cur, {"chunk_id": chunk["id"]})
 
         result = generate_with_retry(
             tts, db, chunk, voice, audio_dir,
@@ -220,20 +234,41 @@ def generate_batch(tts: TTSHandler, db: ProjectDB,
             base_params=params,
             stop_check=stop_check,
         )
-        results.append(result)
 
-        if result["status"] == "ok":
-            ok_count += 1
-        else:
-            error_count += 1
+        with state_lock:
+            state["completed"] += 1
+            if result["status"] == "ok":
+                state["ok"] += 1
+            else:
+                state["errors"] += 1
+            results.append(result)
+            cur = state["completed"]
+        fire(result.get("status", "error"), cur, result)
+        return result
 
-        if progress_callback:
-            progress_callback(i + 1, total, result)
+    concurrency = max(1, int(concurrency or 1))
+    if concurrency == 1:
+        for ch in chunks:
+            if stop_check and stop_check():
+                break
+            run_one(ch)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency,
+                                thread_name_prefix="gen") as ex:
+            futures = []
+            for ch in chunks:
+                if stop_check and stop_check():
+                    break
+                futures.append(ex.submit(run_one, ch))
+            # Drain — exceptions inside run_one are caught by generate_chunk
+            # and surfaced as result rows, so we don't need to re-raise.
+            for f in futures:
+                f.result()
 
     return {
         "total": total,
-        "completed": ok_count + error_count,
-        "ok": ok_count,
-        "errors": error_count,
+        "completed": state["completed"],
+        "ok": state["ok"],
+        "errors": state["errors"],
         "results": results,
     }

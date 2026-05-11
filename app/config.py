@@ -49,6 +49,11 @@ class ResourceSettings:
     max_tokens: int = 8196
     pron_test_buffer_size: int = 5  # pre-generate N test clips ahead
     chunk_test_buffer_size: int = 3
+    # How many chunks to generate concurrently. vLLM batches these requests
+    # internally for higher GPU throughput. Each in-flight request has its
+    # own KV cache, so going too high may OOM. 4 is a safe default for
+    # 24 GB cards; reduce on smaller GPUs.
+    gen_concurrency: int = 4
 
 
 @dataclass

@@ -1,5 +1,6 @@
 """API routes for pipeline step execution and status."""
 
+import asyncio
 import json
 import random
 import threading
@@ -7,6 +8,7 @@ import traceback
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.api.projects import get_project_db, get_project_dir
 from app.handlers.registry import get_tts, get_stt, get_llm, get_extractor
@@ -224,6 +226,160 @@ def update_chapter_narration(slug: str, chapter_id: int,
     return {"status": "updated"}
 
 
+# ─── Split / merge chunks ─────────────────────────────────────────────
+
+@router.post("/{slug}/chunks/{chunk_id}/split")
+def split_chunk(slug: str, chunk_id: str, payload: dict):
+    """Split a chunk into two at the given word offset.
+
+    ``word_offset`` is the 1-based index of the first word that goes into
+    the second half (e.g. 5 → words 0-4 become part 1, words 5+ become
+    part 2).  Any existing generations, QA results, and flags for the
+    chunk are cleared since the split invalidates them.
+    """
+    word_offset = int(payload.get("word_offset", 0))
+    db = get_project_db(slug)
+    ch = db.get_chunk(chunk_id)
+    if not ch:
+        raise HTTPException(404, "Chunk not found")
+
+    words = ch["original_text"].split()
+    n = len(words)
+    if word_offset <= 0 or word_offset >= n:
+        raise HTTPException(400, f"word_offset must be between 1 and {n - 1}")
+
+    text_a = " ".join(words[:word_offset])
+    text_b = " ".join(words[word_offset:])
+    orig_global = ch["global_index"]
+    orig_local  = ch["local_index"]
+    chapter_id  = ch["chapter_id"]
+
+    # Clear stale audio / QA / flags for the chunk being split
+    for row in db.fetchall("SELECT id FROM generations WHERE chunk_id=?", (chunk_id,)):
+        db.execute("DELETE FROM qa_results WHERE generation_id=?", (row["id"],))
+    db.execute("DELETE FROM generations WHERE chunk_id=?", (chunk_id,))
+    db.execute("DELETE FROM user_flags WHERE chunk_id=?", (chunk_id,))
+
+    # Shift subsequent global indexes to make room for the new half
+    db.execute(
+        "UPDATE chunks SET global_index = global_index + 1 WHERE global_index > ?",
+        (orig_global,),
+    )
+    # Shift local indexes within the chapter (skip title chunks)
+    db.execute(
+        "UPDATE chunks SET local_index = local_index + 1 "
+        "WHERE chapter_id=? AND local_index > ? AND is_title_chunk=0",
+        (chapter_id, orig_local),
+    )
+
+    new_local  = orig_local + 1
+    new_global = orig_global + 1
+
+    # Derive new chunk ID from the chapter index
+    ch_row = db.fetchone("SELECT idx FROM chapters WHERE id=?", (chapter_id,))
+    ch_idx = ch_row["idx"] if ch_row else 0
+    new_id = f"ch{ch_idx:03d}_chunk{new_local:04d}"
+    if db.get_chunk(new_id):
+        import time as _t
+        new_id = f"{chunk_id}_sp{int(_t.time()) % 100000}"
+
+    # Update the first half in-place
+    db.execute(
+        "UPDATE chunks SET original_text=?, cleaned_text=?, word_count=?, "
+        "pron_text=NULL, tagged_text=NULL, scene_break_after=0, scene_break_symbol=NULL "
+        "WHERE id=?",
+        (text_a, text_a, len(words[:word_offset]), chunk_id),
+    )
+
+    # Insert the second half (inherits scene/chapter break flags)
+    db.execute(
+        """INSERT INTO chunks
+           (id, chapter_id, local_index, global_index, original_text, cleaned_text,
+            word_count, scene_break_after, chapter_break_after, is_title_chunk, scene_break_symbol)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+        (new_id, chapter_id, new_local, new_global,
+         text_b, text_b, len(words[word_offset:]),
+         int(bool(ch.get("scene_break_after"))),
+         int(bool(ch.get("chapter_break_after"))),
+         ch.get("scene_break_symbol")),
+    )
+    db.commit()
+    return {
+        "status": "split",
+        "first":  {"id": chunk_id, "text": text_a, "word_count": len(words[:word_offset])},
+        "second": {"id": new_id,   "text": text_b, "word_count": len(words[word_offset:])},
+    }
+
+
+@router.post("/{slug}/chunks/merge")
+def merge_chunks_endpoint(slug: str, payload: dict):
+    """Merge two adjacent chunks from the same chapter into one.
+
+    Accepts ``{"chunk_ids": [id_a, id_b]}``.  The chunks must be adjacent
+    (consecutive global_index).  All existing audio, QA, and flags for
+    both chunks are cleared.  The merged text is stored in the first
+    chunk; the second chunk row is deleted.
+    """
+    ids = payload.get("chunk_ids", [])
+    if len(ids) != 2:
+        raise HTTPException(400, "Exactly 2 chunk_ids required")
+
+    db = get_project_db(slug)
+    chunks = [db.get_chunk(cid) for cid in ids]
+    if any(c is None for c in chunks):
+        raise HTTPException(404, "One or more chunks not found")
+
+    chunks.sort(key=lambda c: c["global_index"])
+    c1, c2 = chunks
+
+    if c2["global_index"] != c1["global_index"] + 1:
+        raise HTTPException(400, "Chunks must be adjacent (consecutive in order)")
+    if c1["chapter_id"] != c2["chapter_id"]:
+        raise HTTPException(400, "Cannot merge chunks from different chapters")
+
+    merged_text = c1["original_text"] + "\n" + c2["original_text"]
+    merged_wc   = len(merged_text.split())
+
+    # Clear audio / QA / flags for both
+    for cid in [c1["id"], c2["id"]]:
+        for row in db.fetchall("SELECT id FROM generations WHERE chunk_id=?", (cid,)):
+            db.execute("DELETE FROM qa_results WHERE generation_id=?", (row["id"],))
+        db.execute("DELETE FROM generations WHERE chunk_id=?", (cid,))
+        db.execute("DELETE FROM user_flags WHERE chunk_id=?", (cid,))
+
+    # Update first chunk with merged content; inherit break flags from the second
+    db.execute(
+        "UPDATE chunks SET original_text=?, cleaned_text=?, word_count=?, "
+        "scene_break_after=?, chapter_break_after=?, scene_break_symbol=?, "
+        "pron_text=NULL, tagged_text=NULL WHERE id=?",
+        (merged_text, merged_text, merged_wc,
+         int(bool(c2.get("scene_break_after"))),
+         int(bool(c2.get("chapter_break_after"))),
+         c2.get("scene_break_symbol"),
+         c1["id"]),
+    )
+
+    # Delete the second chunk and close the gap in ordering
+    db.execute("DELETE FROM chunks WHERE id=?", (c2["id"],))
+    db.execute(
+        "UPDATE chunks SET global_index = global_index - 1 WHERE global_index > ?",
+        (c2["global_index"],),
+    )
+    db.execute(
+        "UPDATE chunks SET local_index = local_index - 1 "
+        "WHERE chapter_id=? AND local_index > ? AND is_title_chunk=0",
+        (c2["chapter_id"], c2["local_index"]),
+    )
+    db.commit()
+    return {
+        "status": "merged",
+        "merged_id":  c1["id"],
+        "deleted_id": c2["id"],
+        "text": merged_text,
+        "word_count": merged_wc,
+    }
+
+
 # ─── Per-chunk voice override ─────────────────────────────────────────
 
 @router.patch("/{slug}/chunks/{chunk_id}/voice")
@@ -250,6 +406,60 @@ def bulk_update_chunk_voice(slug: str, req: BulkChunkVoiceUpdate):
     voice = req.voice or None
     n = db.bulk_update_chunk_voice(req.chunk_ids, voice)
     return {"status": "updated", "count": n, "voice": voice}
+
+
+@router.post("/{slug}/resync-scene-symbols")
+def resync_scene_symbols(slug: str):
+    """Back-fill scene_break_symbol on existing chunks without re-chunking.
+
+    Safe to call on projects that were chunked before symbol embedding was
+    added to clean.py.  Only touches the scene_break_symbol column; no
+    audio, QA, or flag data is modified.
+
+    Algorithm:
+      1. Re-apply clean to each chapter's raw_text (using the symbols the
+         user already confirmed) to get cleaned_text with [SCENE_BREAK:sym]
+         markers, but without resetting current_step.
+      2. Extract the symbols in document order.
+      3. Match them against the existing scene-ending chunks (in local_index
+         order) and write scene_break_symbol for each pair.
+    """
+    import re as _re
+    from app.pipeline.clean import clean_chapter_text
+
+    db = get_project_db(slug)
+
+    symbols_rows = db.get_symbols()
+    scene_breaks = {s["symbol"] for s in symbols_rows if s["is_scene_break"]}
+
+    sb_re = _re.compile(r"^\[SCENE_BREAK(?::(.+))?\]$", _re.MULTILINE)
+
+    chapters = db.get_chapters()
+    total_updated = 0
+
+    for ch in chapters:
+        cleaned = clean_chapter_text(ch["raw_text"] or "", scene_breaks)
+
+        symbols_in_order = [m.group(1) for m in sb_re.finditer(cleaned)]
+        if not symbols_in_order:
+            continue
+
+        scene_chunks = db.fetchall(
+            "SELECT id FROM chunks "
+            "WHERE chapter_id=? AND scene_break_after=1 AND is_title_chunk=0 "
+            "ORDER BY local_index",
+            (ch["id"],),
+        )
+
+        for sym, chunk_row in zip(symbols_in_order, scene_chunks):
+            db.execute(
+                "UPDATE chunks SET scene_break_symbol=? WHERE id=?",
+                (sym, chunk_row["id"]),
+            )
+            total_updated += 1
+
+    db.commit()
+    return {"updated": total_updated}
 
 
 @router.post("/{slug}/title-chunks/refresh")
@@ -353,7 +563,7 @@ def add_standard_override(slug: str, word: str, phonetic: str):
     db = get_project_db(slug)
     # Find context from the book
     context = analyze.get_context_for_word(db, word)
-    chunk_id = ""
+    chunk_id = None
     chunks = db.get_chunks()
     for ch in chunks:
         if word.lower() in ch["original_text"].lower():
@@ -988,6 +1198,16 @@ def generate_audio(slug: str, req: GenerateRequest):
     voice = req.voice or settings.engine.tts_config.get("default_voice", "tara")
     audio_dir = project_dir / "audio"
 
+    # Build optional base params from the request (only include keys the user set)
+    base_params: dict | None = None
+    _overrides = {}
+    if req.temperature is not None:
+        _overrides["temperature"] = req.temperature
+    if req.repetition_penalty is not None:
+        _overrides["repetition_penalty"] = req.repetition_penalty
+    if _overrides:
+        base_params = _overrides
+
     # Apply pronunciation to all chunks first
     from app.pipeline.pronunciation import apply_all_pronunciation
     apply_all_pronunciation(db)
@@ -1067,8 +1287,10 @@ def generate_audio(slug: str, req: GenerateRequest):
             tts, db, voice, audio_dir,
             chunk_ids=resolved_chunk_ids,
             max_retries=req.max_retries,
+            params=base_params,
             progress_callback=on_progress,
             stop_check=make_stop_check(),
+            concurrency=settings.resource.gen_concurrency,
         )
         _task_progress[task_id] = {
             "status": "done",
@@ -1142,6 +1364,8 @@ def generate_test(slug: str, req: GenQATestRequest):
     from app.pipeline.pronunciation import build_replacement_map
 
     def run_test():
+        import time as _t
+        started_at = _t.time()
         remaining = set(chunk_ids)
         cycles = []
 
@@ -1193,6 +1417,7 @@ def generate_test(slug: str, req: GenQATestRequest):
                     "current": current, "total": total,
                     "status": "running",
                     "last_result": result,
+                    "started_at": started_at,
                 }
 
             if remaining:
@@ -1209,6 +1434,7 @@ def generate_test(slug: str, req: GenQATestRequest):
                     max_retries=gen_max_retries,
                     progress_callback=on_gen_progress,
                     stop_check=make_stop_check(),
+                    concurrency=settings.resource.gen_concurrency,
                 )
 
             # QA phase
@@ -1231,6 +1457,7 @@ def generate_test(slug: str, req: GenQATestRequest):
                     "status": "running",
                     "passed": passed, "failed": failed,
                     "last_result": result,
+                    "started_at": started_at,
                 }
 
             # Ensure STT is loaded before running QA
@@ -1241,7 +1468,7 @@ def generate_test(slug: str, req: GenQATestRequest):
             qa_summary = qa.qa_batch(
                 stt, db,
                 chunk_ids=list(remaining),
-                threshold=0.85,
+                threshold=0.95,
                 pron_map=pron_map,
                 progress_callback=on_qa_progress,
                 stop_check=make_stop_check(),
@@ -1384,6 +1611,62 @@ def get_task_progress(slug: str, task_id: str):
     return progress
 
 
+@router.get("/{slug}/task/{task_id}/stream")
+async def stream_task_progress(slug: str, task_id: str):
+    """Server-Sent Events stream of task progress.
+
+    Replaces 1.5s polling with sub-second push updates. Falls back
+    transparently — clients that hit a network error or older proxies
+    can still poll the JSON endpoint above.
+
+    Internally the worker writes to ``_task_progress`` from a background
+    thread; this endpoint samples that dict every 250 ms and only emits
+    when the payload changes, plus a periodic keepalive comment so
+    intermediaries don't reap an idle connection.
+    """
+    full_id = f"{slug}_{task_id}" if not task_id.startswith(slug) else task_id
+
+    async def event_generator():
+        last_payload_str: str | None = None
+        idle_ticks = 0
+        # Heartbeat every ~10s of unchanged state.
+        HEARTBEAT_TICKS = 40
+        TICK_SECONDS = 0.25
+
+        while True:
+            progress = _task_progress.get(full_id)
+            if progress is None:
+                yield "event: not_found\ndata: {}\n\n"
+                return
+
+            payload_str = json.dumps(progress, default=str)
+            if payload_str != last_payload_str:
+                yield f"data: {payload_str}\n\n"
+                last_payload_str = payload_str
+                idle_ticks = 0
+            else:
+                idle_ticks += 1
+                if idle_ticks >= HEARTBEAT_TICKS:
+                    yield ": keepalive\n\n"
+                    idle_ticks = 0
+
+            status = progress.get("status")
+            if status in ("done", "error", "stopped"):
+                return
+
+            await asyncio.sleep(TICK_SECONDS)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/{slug}/task/{task_name}/pause")
 def pause_task(slug: str, task_name: str):
     full = f"{slug}_{task_name}" if not task_name.startswith(slug) else task_name
@@ -1420,19 +1703,53 @@ def get_task_controls(slug: str, task_name: str):
 
 @router.post("/{slug}/export")
 def export_audio(slug: str, req: ExportRequest):
-    """Merge and export audio.
+    """Merge and export audio (runs in background for large books).
 
-    The response includes ``total_seams``, ``flagged_seams``, and a
-    ``flagged`` list with per-seam warnings (long silences, abrupt cuts,
-    loudness jumps, sample-discontinuity pops). The UI surfaces these so
-    the user can inspect or regenerate suspect chunks before publishing.
+    Poll /api/pipeline/{slug}/task/export for progress.
+    Result dict is written into the task progress when done.
     """
     db = get_project_db(slug)
     settings = get_settings()
     project_dir = get_project_dir(slug)
     export_dir = project_dir / "export"
 
-    if req.scope == "chapter":
-        return merge.export_by_chapter(db, export_dir, settings.audio)
-    else:
-        return merge.export_full_book(db, export_dir, settings.audio)
+    task_id = f"{slug}_export"
+    _task_progress[task_id] = {"status": "running", "current": 0, "total": 0}
+
+    def run_export():
+        import time as _t
+        started_at = _t.time()
+
+        def on_progress(current: int, total: int):
+            elapsed = _t.time() - started_at
+            rate = current / elapsed if elapsed > 0.5 else 0
+            eta_sec = round((total - current) / rate) if rate > 0 else None
+            _task_progress[task_id] = {
+                "status": "running",
+                "current": current,
+                "total": total,
+                "elapsed_sec": round(elapsed, 1),
+                "eta_sec": eta_sec,
+            }
+
+        try:
+            if req.scope == "chapter":
+                result = merge.export_by_chapter(
+                    db, export_dir, settings.audio, on_progress
+                )
+            else:
+                result = merge.export_full_book(
+                    db, export_dir, settings.audio, on_progress
+                )
+            elapsed = _t.time() - started_at
+            _task_progress[task_id] = {
+                "status": "done",
+                "elapsed_sec": round(elapsed, 1),
+                **result,
+            }
+        except Exception as e:
+            _task_progress[task_id] = {"status": "error", "message": str(e)}
+
+    if not _run_in_dedicated_thread(task_id, run_export):
+        raise HTTPException(409, "Export task already running")
+    return {"task_id": task_id, "status": "started"}

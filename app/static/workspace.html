@@ -19,6 +19,13 @@
         .step-section { display: none; }
         .step-section.active { display: block; }
 
+        /* Hide number-input spinners on sim-range filter fields */
+        #rv-sim-min::-webkit-inner-spin-button,
+        #rv-sim-min::-webkit-outer-spin-button,
+        #rv-sim-max::-webkit-inner-spin-button,
+        #rv-sim-max::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        #rv-sim-min, #rv-sim-max { -moz-appearance: textfield; }
+
         /* Review layout */
         .review-layout { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: auto 1fr; height: calc(100vh - 60px); }
         .review-nav { grid-row: 1 / -1; border-right: var(--border); overflow-y: auto; background: var(--bg-main); }
@@ -128,7 +135,7 @@
 
             <section class="step-section" id="step-tagging"><div class="center-content"><h2>Emotion Tags</h2><p class="text-muted mt-sm mb-lg">Insert expression tags via LLM.</p><div id="tagging-content"></div></div></section>
 
-            <section class="step-section" id="step-generate"><div style="padding:var(--space-lg);max-width:1100px;margin:0 auto;"><h2>Generate Audio</h2><p class="text-muted mt-sm mb-lg">Select which chunks to generate, then click Start. Progress follows you in the floating panel at bottom-right.</p><div class="card"><div class="flex gap-sm" style="flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;"><div class="form-group" style="margin-bottom:0;flex:0 0 auto;"><label>Default voice</label><select id="gen-voice"></select></div><div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;margin-left:8px;"><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;">Select:</span><button class="btn btn-ghost btn-small" onclick="genSelectMode('pending')" title="Check all chunks with no audio yet">Continue</button><button class="btn btn-ghost btn-small" onclick="genSelectMode('all')">All</button><button class="btn btn-ghost btn-small" onclick="genSelectMode('failed')" title="Check QA-failed, flagged, or errored chunks">Failed</button><button class="btn btn-ghost btn-small" onclick="genSelectMode('none')">None</button><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 6px;"></span><button id="gen-start-btn" class="btn btn-primary" onclick="startGen()">Start</button><button id="gen-pause-btn" class="btn btn-ghost" onclick="pauseGen('generate')" title="Suspend after the current chunk — use Resume to continue">Pause</button><button id="gen-resume-btn" class="btn btn-ghost" onclick="resumeGen('generate')">Resume</button><button id="gen-stop-btn" class="btn btn-ghost" onclick="stopGen('generate')" title="Stop permanently after the current chunk (cannot be resumed)">Stop</button></div></div><div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:0.82rem;"><span style="color:var(--text-muted)">Filter:</span><button class="btn btn-ghost btn-small" onclick="genFilter('all')" id="gen-filter-all">All</button><button class="btn btn-ghost btn-small" onclick="genFilter('after_scene')" id="gen-filter-after_scene" title="Chunks that come after a scene break inside their chapter">After scene break</button><select id="gen-filter-scene-symbol" style="font-size:0.78rem" onchange="_genFilterSymbol = this.value; if(_genFilter==='after_scene') genRenderChunks();" title="Limit to chunks following a particular scene-break symbol"><option value="">Any symbol</option></select><button class="btn btn-ghost btn-small" onclick="genFilter('before_scene')" id="gen-filter-before_scene" title="Chunks before any scene break in their chapter (the default narration)">Other (no scene break before)</button><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 6px;"></span><span style="color:var(--text-muted)">Voice for selection:</span><select id="gen-bulk-voice" style="font-size:0.82rem"></select><button class="btn btn-secondary btn-small" onclick="setVoiceForSelection()" title="Apply this voice to every checked chunk">Apply</button><button class="btn btn-ghost btn-small" onclick="setVoiceForSelection(null)" title="Clear voice override on every checked chunk (revert to the default voice)">Clear</button></div><div id="gen-chunk-list" style="max-height:60vh;overflow-y:auto;border:var(--border);border-radius:var(--radius-sm);"></div><div id="gen-progress" class="mt-sm" style="font-size:0.85rem;"></div></div></div></section>
+            <section class="step-section" id="step-generate"><div style="padding:var(--space-lg);max-width:1100px;margin:0 auto;"><h2>Generate Audio</h2><p class="text-muted mt-sm mb-lg">Select which chunks to generate, then click Start. Progress follows you in the floating panel at bottom-right.</p><div class="card"><div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;margin-bottom:12px;"><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;">Voice:</span><select id="gen-voice" style="font-size:0.85rem"></select><button class="btn btn-secondary btn-small" onclick="setVoiceForSelection()" title="Apply this voice to every checked chunk">Apply to selection</button><button class="btn btn-ghost btn-small" onclick="setVoiceForSelection(null)" title="Clear per-chunk voice override on checked chunks">Clear</button><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 4px;"></span><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;">Select:</span><button id="gen-sel-pending" class="btn btn-secondary btn-small" onclick="genSelectMode('pending')" title="Check all chunks with no audio yet">Continue</button><button id="gen-sel-all" class="btn btn-ghost btn-small" onclick="genSelectMode('all')">All</button><button id="gen-sel-failed" class="btn btn-ghost btn-small" onclick="genSelectMode('failed')" title="Check QA-failed, flagged, or errored chunks">Failed</button><button id="gen-sel-none" class="btn btn-ghost btn-small" onclick="genSelectMode('none')">None</button><span id="gen-sel-count" style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;min-width:60px;"></span><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 4px;"></span><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;" title="TTS temperature — lower is more consistent, higher is more varied (leave blank for engine default)">Temp:</span><input type="number" id="gen-temperature" placeholder="default" min="0.1" max="1.5" step="0.05" style="width:70px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="TTS temperature (blank = use engine setting)"><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;" title="Repetition penalty — higher values reduce repeated phrases (leave blank for engine default)">Rep:</span><input type="number" id="gen-rep-penalty" placeholder="default" min="1.0" max="2.0" step="0.05" style="width:70px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="Repetition penalty (blank = use engine setting)"><span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;" title="Max engine-error retries per chunk. Retries fire only if the TTS crashes on a chunk (not for QA failures). Each retry varies temperature/rep.penalty slightly.">Err.retries:</span><input type="number" id="gen-max-retries" value="3" min="1" max="10" step="1" style="width:45px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="Max engine-error retries per chunk (not QA retries)"><span style="border-left:var(--border);height:18px;display:inline-block;margin:0 4px;"></span><button id="gen-start-btn" class="btn btn-primary" onclick="startGen()">Start</button><button id="gen-pause-btn" class="btn btn-ghost" onclick="pauseGen('generate')" title="Suspend after the current chunk — use Resume to continue">Pause</button><button id="gen-resume-btn" class="btn btn-ghost" onclick="resumeGen('generate')">Resume</button><button id="gen-stop-btn" class="btn btn-ghost" onclick="stopGen('generate')" title="Stop permanently after the current chunk (cannot be resumed)">Stop</button></div><div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;margin-bottom:10px;font-size:0.82rem;"><span style="color:var(--text-muted)">Filter:</span><button class="btn btn-ghost btn-small" onclick="genFilter('all')" id="gen-filter-all">All</button><button class="btn btn-ghost btn-small" onclick="genFilter('after_scene')" id="gen-filter-after_scene" title="Chunks that come after a scene break inside their chapter">After scene break</button><select id="gen-filter-scene-symbol" style="font-size:0.78rem;width:auto;display:none" onchange="_genFilterSymbol = this.value; genRenderChunks();" title="Limit to chunks following a particular scene-break symbol"><option value="">Any symbol</option></select><button id="gen-resync-symbols-btn" class="btn btn-ghost btn-small" onclick="resyncSceneSymbols()" style="display:none" title="Re-parse chapter text to recover scene-break symbols">&#8635; Resync</button><button class="btn btn-ghost btn-small" onclick="genFilter('before_scene')" id="gen-filter-before_scene" title="Chunks before any scene break in their chapter (the default narration)">Other (no scene break before)</button></div><div id="gen-stats" style="font-size:0.82rem;margin-bottom:6px;"></div><div id="gen-chunk-list" style="max-height:60vh;overflow-y:auto;border:var(--border);border-radius:var(--radius-sm);"></div><div id="gen-progress" class="mt-sm" style="font-size:0.85rem;"></div></div></div></section>
 
             <section class="step-section" id="step-review">
                 <div class="review-layout">
@@ -173,7 +180,7 @@
                             <span style="color:var(--text-muted);font-size:0.78rem">–</span>
                             <input type="number" id="rv-sim-max" value="0.85" min="0" max="1" step="0.05" oninput="if(rvFilter==='sim_range') renderRvChunks();" style="width:60px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="Sim range maximum (inclusive)">
                             <span style="border-left:var(--border);height:18px;display:inline-block;margin:0 4px;"></span>
-                            <input type="number" id="rv-qa-threshold" value="0.85" min="0.5" max="1.0" step="0.05" style="width:62px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="QA pass threshold — used by Run QA to mark a chunk pass/fail">
+                            <input type="number" id="rv-qa-threshold" value="0.95" min="0.5" max="1.0" step="0.005" style="width:62px;background:var(--bg-input);border:var(--border);color:var(--text-secondary);font-size:0.78rem;padding:2px 6px;border-radius:var(--radius-sm);" title="QA pass threshold — used by Run QA to mark a chunk pass/fail">
                             <button class="btn btn-ghost btn-small" onclick="openModal('qa-explain-modal')" title="How QA scoring works" style="padding:3px 7px">?</button>
                             <button class="btn btn-secondary btn-small" onclick="startReviewQA()" title="Run QA on the chunks currently visible (current filter + chapter)">Run QA</button>
                         </div>
@@ -193,11 +200,26 @@
 <!-- Edit Chunk TTS Text Modal -->
 <div class="modal-overlay" id="edit-chunk-modal"><div class="modal" style="max-width:680px"><h2>Edit TTS Text</h2><p class="text-muted mb-sm" id="edit-chunk-id-label" style="font-family:var(--font-mono);font-size:0.82rem;"></p><textarea id="edit-chunk-text" rows="9" style="width:100%;box-sizing:border-box;font-family:var(--font-reading);font-size:0.95rem;line-height:1.65;"></textarea><p class="text-faint mt-sm" style="font-size:0.78rem;">This is what the TTS engine will read. The original manuscript text is unchanged. Use ↻ to regenerate after saving.</p><div class="modal-actions"><button class="btn btn-ghost btn-small" onclick="clearChunkEdit()" title="Remove override and revert to automatic text">Clear override</button><button class="btn btn-secondary" onclick="closeModal('edit-chunk-modal')">Cancel</button><button class="btn btn-primary" onclick="saveChunkEdit()">Save</button></div></div></div>
 
+<!-- Split Chunk Modal -->
+<div class="modal-overlay" id="split-chunk-modal">
+    <div class="modal" style="max-width:720px">
+        <h2>Split Chunk</h2>
+        <p class="text-muted mb-sm" id="split-chunk-label" style="font-family:var(--font-mono);font-size:0.82rem;"></p>
+        <p class="text-faint mb-md" style="font-size:0.78rem;">Click a word to split <em>before</em> it. Words highlighted in blue become the second chunk.</p>
+        <div id="split-word-area" style="line-height:2;font-size:0.95rem;font-family:var(--font-reading);padding:12px;border:var(--border);border-radius:var(--radius-sm);max-height:40vh;overflow-y:auto;cursor:pointer;user-select:none;"></div>
+        <div id="split-preview" class="mt-md" style="font-size:0.8rem;color:var(--text-muted);min-height:1.5em;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeModal('split-chunk-modal')">Cancel</button>
+            <button class="btn btn-primary" id="split-confirm-btn" onclick="confirmSplit()" disabled>Split</button>
+        </div>
+    </div>
+</div>
+
 <!-- Settings Modal -->
 <div class="modal-overlay" id="settings-modal"><div class="modal"><h2>Settings</h2><p class="text-muted mb-md">Edit application settings (JSON). Changes will be applied when saved.</p><textarea id="settings-json" rows="12" style="width:100%;font-family:var(--font-mono);font-size:0.85rem;padding:8px;box-sizing:border-box;"></textarea><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('settings-modal')">Cancel</button><button class="btn btn-primary" onclick="saveSettings()">Save</button></div></div></div>
 
 <!-- QA threshold explanation modal -->
-<div class="modal-overlay" id="qa-explain-modal"><div class="modal"><h2>Similarity Threshold</h2><p class="text-muted mb-md">The QA computes a word-level similarity between the original text and the STT transcription. It counts matching words vs. total differing words; pronunciation substitutions that are expected (marked <em>pron_expected</em>) are ignored when computing the adjusted score. The <strong>Similarity threshold</strong> is the minimum adjusted similarity required for a chunk to <em>pass</em> QA (e.g. 0.85 means at least 85% similarity). Increase the threshold to be stricter, or lower it to be more permissive.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('qa-explain-modal')">Close</button></div></div></div>
+<div class="modal-overlay" id="qa-explain-modal"><div class="modal"><h2>QA Scoring</h2><p class="text-muted mb-md">The QA transcribes generated audio with Whisper (STT) and compares it word-by-word to the original text. Common STT equivalences are normalized before comparison: contractions are expanded ("I'm" → "I am", "we'll" → "we will"), digits are converted to words ("150" → "one hundred fifty"), and expected pronunciation substitutions are ignored.</p><p class="text-muted mb-md">The <strong>Similarity threshold</strong> is the minimum adjusted match ratio for a chunk to <em>pass</em> (default 0.95 = 95%). Type a value or use the arrows — 0.005 increments let you tune precisely.</p><div class="form-group" style="margin-bottom:0"><label style="font-size:0.88rem">Scoring method</label><select id="rv-qa-method" style="font-size:0.85rem;background:var(--bg-input);border:var(--border);color:var(--text-secondary);padding:4px 8px;border-radius:var(--radius-sm);width:100%;"><option value="rule_based">Rule-based (word matching + contraction/number normalization)</option><option value="ml" disabled>ML — speaker-embedding voice verification (coming soon)</option></select><p class="text-faint mt-sm" style="font-size:0.78rem;">ML mode will use a speaker-embedding model to verify the generated voice matches the one selected, in addition to the text match check.</p></div><div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('qa-explain-modal')">Close</button></div></div></div>
 
 <!-- Debug banner and global error handlers (helps capture parse/runtime errors) -->
 <div id="debug-banner" style="display:none;position:fixed;top:0;left:0;right:0;background:#ffdddd;color:#900;padding:8px;z-index:9999;font-family:var(--font-mono);font-size:0.9rem;">JS errors will appear here.</div>
@@ -870,14 +892,7 @@ async function loadGen(){
                 s.value = st.engine.tts_config.default_voice || (s.options[0] && s.options[0].value) || '';
             }
         }catch(_){ }
-        // Populate the bulk-voice picker too (with a "(default)" option
-        // that clears any per-chunk override).
-        const bulk = document.getElementById('gen-bulk-voice');
-        if(bulk){
-            bulk.innerHTML = '';
-            bulk.appendChild(el('option',{value:''},'(default voice)'));
-            for(const x of _genVoices) bulk.appendChild(el('option',{value:x.id},x.name));
-        }
+        // (gen-bulk-voice removed — gen-voice is the single voice picker)
     }catch(_){ }
     // Load chapter info for collapsible headers
     try{ _genChapters = await API.get(`/api/audio/${SLUG}/review/chapters`); }catch(_){ _genChapters = []; }
@@ -946,11 +961,31 @@ function _refreshSceneSymbolOptions(){
         sel.appendChild(el('option',{value:s},`After  ${s}`));
     }
     if(hasUnknown){
-        sel.appendChild(el('option',{value:'__none__'},'After  (unknown — re-clean to capture)'));
+        sel.appendChild(el('option',{value:'__none__'},'After  (unknown symbol)'));
     }
     // Restore previous selection if still valid
     if([...sel.options].some(o => o.value === prev)) sel.value = prev;
     else { sel.value = ''; _genFilterSymbol = ''; }
+    // Show the Resync button when there are scene breaks but none have symbols
+    const resyncBtn = document.getElementById('gen-resync-symbols-btn');
+    if(resyncBtn) resyncBtn.style.display = (hasUnknown && named.size === 0) ? '' : 'none';
+}
+
+async function resyncSceneSymbols(){
+    const btn = document.getElementById('gen-resync-symbols-btn');
+    if(btn) btn.disabled = true;
+    try {
+        const r = await API.post(`/api/pipeline/${SLUG}/resync-scene-symbols`, {});
+        showToast(`Synced ${r.updated} scene-break symbol(s)`, 'success');
+        // Reload chunks so the dropdown picks up the new symbols
+        _genChunks = await API.get(`/api/audio/${SLUG}/review`);
+        _refreshSceneSymbolOptions();
+        genRenderChunks();
+    } catch(err) {
+        showToast('Resync failed: ' + err.message, 'error');
+    } finally {
+        if(btn) btn.disabled = false;
+    }
 }
 
 function genUpdateFilterButtons(){
@@ -964,6 +999,9 @@ function genUpdateFilterButtons(){
 
 function genFilter(mode){
     _genFilter = mode;
+    // Show the scene-symbol select only when the after_scene filter is active
+    const symSel = document.getElementById('gen-filter-scene-symbol');
+    if(symSel) symSel.style.display = (mode === 'after_scene') ? '' : 'none';
     genUpdateFilterButtons();
     genRenderChunks();
 }
@@ -997,6 +1035,19 @@ function genRenderChunks(){
         container.innerHTML = '<div class="text-muted" style="padding:12px">No chunks found. Complete Clean & Chunk first.</div>';
         return;
     }
+    // Update summary stats bar
+    const statsEl = document.getElementById('gen-stats');
+    if(statsEl){
+        const total = _genChunks.length;
+        const nDone = _genChunks.filter(c=>{ const s=_chunkGenStatus(c); return s==='pass'||s==='audio'; }).length;
+        const nFail = _genChunks.filter(c=>{ const s=_chunkGenStatus(c); return s==='fail'||s==='flagged'||s==='error'; }).length;
+        const nPend = total - nDone - nFail;
+        statsEl.innerHTML =
+            `<span style="color:var(--text-muted)">${total} total</span>` +
+            (nDone ? `<span style="color:var(--success);margin-left:10px">${nDone} done</span>` : '') +
+            (nFail ? `<span style="color:var(--error);margin-left:10px">${nFail} need attention</span>` : '') +
+            (nPend ? `<span style="color:var(--text-muted);margin-left:10px">${nPend} pending</span>` : '');
+    }
 
     // Group chunks by chapter prefix (e.g. "ch000")
     const byChapter = new Map();
@@ -1014,7 +1065,7 @@ function genRenderChunks(){
 
     let html = `<table class="data-table" style="width:100%"><thead><tr>` +
         `<th style="width:32px;padding:8px 10px;"><input type="checkbox" id="gen-select-all" title="Select / deselect all" onchange="genToggleAll(this.checked)"></th>` +
-        `<th style="white-space:nowrap">Chunk</th><th>Status</th><th style="white-space:nowrap">Voice</th><th>Text</th></tr></thead><tbody>`;
+        `<th style="white-space:nowrap">Chunk</th><th>Status</th><th style="white-space:nowrap">Voice</th><th>Text</th><th></th></tr></thead><tbody>`;
 
     for(const [prefix, chunks] of byChapter){
         // Apply the active filter when deciding which rows to render.
@@ -1072,18 +1123,26 @@ function genRenderChunks(){
                 }
                 const st = _chunkGenStatus(c);
                 const exc = (c.original_text||'').slice(0,90).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+                const editedBadge = c.pron_text_locked ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px" title="TTS text manually edited">✎</span>` : '';
                 html += `<tr style="cursor:pointer" onclick="genRowClick(event,'${c.id}')">` +
                     `<td style="padding:5px 10px"><input type="checkbox" class="gen-cb" data-cid="${c.id}" onclick="event.stopPropagation()"></td>` +
                     `<td style="font-family:var(--font-mono);font-size:0.75rem;white-space:nowrap;padding:5px 10px">${c.id}</td>` +
                     `<td id="gen-status-${c.id}" style="padding:5px 10px;white-space:nowrap">${_genBadge(st)}</td>` +
                     `<td style="padding:5px 10px;white-space:nowrap" onclick="event.stopPropagation()"><select class="gen-voice-cell" data-cid="${c.id}" onchange="setChunkVoice('${c.id}', this.value)" style="font-size:0.78rem">${_voiceOptionsHtml(c.voice||'')}</select></td>` +
-                    `<td style="font-size:0.82rem;color:var(--text-secondary);max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 10px">${exc}</td>` +
+                    `<td style="font-size:0.82rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 10px">${exc}${editedBadge}</td>` +
+                    `<td style="padding:5px 8px;white-space:nowrap" onclick="event.stopPropagation()">` +
+                        `<button class="btn btn-ghost btn-small" title="Split this chunk" onclick="openSplitModal('${c.id}')">✂</button>` +
+                        `<button class="btn btn-ghost btn-small" title="Merge with next chunk" onclick="mergeWithNext('${c.id}','gen')" style="margin-left:2px">↕</button>` +
+                    `</td>` +
                 `</tr>`;
             }
         }
     }
     html += '</tbody></table>';
     container.innerHTML = html;
+    // Wire individual checkbox clicks to update the selection count
+    container.querySelectorAll('.gen-cb').forEach(cb => cb.addEventListener('change', updateSelCount));
+    updateSelCount();
 }
 
 // ── Scene / voice helpers ────────────────────────────────────────────
@@ -1103,6 +1162,7 @@ function selectScene(prefix, sceneIdx){
         sa.indeterminate = chk.length > 0 && chk.length < all.length;
         sa.checked = all.length > 0 && chk.length === all.length;
     }
+    updateSelCount();
 }
 
 async function setSceneVoice(prefix, sceneIdx, voice){
@@ -1137,7 +1197,7 @@ async function setVoiceForSelection(forceVoice){
     if(forceVoice === null){
         v = null;
     }else{
-        const picked = document.getElementById('gen-bulk-voice')?.value || '';
+        const picked = document.getElementById('gen-voice')?.value || '';
         v = picked || null;
     }
     try{
@@ -1163,13 +1223,17 @@ function genToggleChapter(prefix){
 function genRowClick(e, cid){
     const cb = document.querySelector(`.gen-cb[data-cid="${cid}"]`);
     if(cb) cb.checked = !cb.checked;
+    updateSelCount();
 }
 
 function genToggleAll(checked){
     document.querySelectorAll('.gen-cb').forEach(cb=>cb.checked=checked);
+    updateSelCount();
 }
 
+let _genSelectMode = 'pending';
 function genSelectMode(mode){
+    _genSelectMode = mode;
     document.querySelectorAll('.gen-cb').forEach(cb=>{
         const c = _genChunks.find(x=>x.id===cb.dataset.cid);
         if(!c){ cb.checked=false; return; }
@@ -1182,6 +1246,16 @@ function genSelectMode(mode){
     const all=document.querySelectorAll('.gen-cb'), chk=document.querySelectorAll('.gen-cb:checked');
     const sa=document.getElementById('gen-select-all');
     if(sa){ sa.indeterminate=chk.length>0&&chk.length<all.length; sa.checked=all.length>0&&chk.length===all.length; }
+    ['pending','all','failed','none'].forEach(m=>{
+        const btn=document.getElementById('gen-sel-'+m);
+        if(btn){ btn.classList.toggle('btn-secondary',m===mode); btn.classList.toggle('btn-ghost',m!==mode); }
+    });
+    updateSelCount();
+}
+function updateSelCount(){
+    const n=document.querySelectorAll('.gen-cb:checked').length;
+    const sp=document.getElementById('gen-sel-count');
+    if(sp) sp.textContent=n ? n+' selected' : '';
 }
 
 function genUpdateRow(cid, status){
@@ -1230,10 +1304,16 @@ async function startGen(){
     if(startBtn) startBtn.disabled = true;
     p.innerHTML = `<span class="text-muted">${checked.length} chunk${checked.length!==1?'s':''} queued…</span>`;
     const voice = document.getElementById('gen-voice').value;
+    const _tempVal = document.getElementById('gen-temperature')?.value;
+    const _repVal  = document.getElementById('gen-rep-penalty')?.value;
+    const _retries = parseInt(document.getElementById('gen-max-retries')?.value) || 3;
+    const genPayload = {voice, chunk_ids: checked, max_retries: _retries};
+    if(_tempVal !== '' && _tempVal != null) genPayload.temperature = +_tempVal;
+    if(_repVal  !== '' && _repVal  != null) genPayload.repetition_penalty = +_repVal;
     try{
         projectInfo = projectInfo || {};
         projectInfo.voice = voice;
-        const genRes = await API.post(`/api/pipeline/${SLUG}/generate`,{voice, chunk_ids: checked});
+        const genRes = await API.post(`/api/pipeline/${SLUG}/generate`, genPayload);
         if(!genRes || !genRes.task_id) throw new Error('Server did not return a task ID');
         p.innerHTML = `<span class="text-muted">${checked.length} chunk${checked.length!==1?'s':''} queued — progress shown in the panel at bottom-right</span>`;
         try{ monitorTaskPanel(genRes.task_id, 'Generate Audio'); }catch(err){ console.warn('monitorTaskPanel unavailable:', err); }
@@ -1274,7 +1354,8 @@ async function stopGen(taskName='generate'){
 /* ═══ QA (integrated into Review step) ═══ */
 async function startReviewQA(){
     try{
-        const threshold = +document.getElementById('rv-qa-threshold').value || 0.85;
+        const threshold = +document.getElementById('rv-qa-threshold').value || 0.95;
+        const method = document.getElementById('rv-qa-method')?.value || 'rule_based';
         // Run QA only on the chunks currently visible — the active
         // filter + chapter selection. This matches what the user can
         // see and lets them re-QA targeted subsets (e.g. "everything
@@ -1288,6 +1369,7 @@ async function startReviewQA(){
             min_similarity: threshold,
             mode: 'all',
             chunk_ids: visible,
+            method,
         });
         if(qaRes && qaRes.task_id){
             try{ monitorTaskPanel(qaRes.task_id, `QA Check (${visible.length})`); }catch(_){ }
@@ -1389,6 +1471,7 @@ function renderRvChunks(){
             else row.appendChild(el('span',{class:'badge badge-info'},'unchecked'));
         } else row.appendChild(el('span',{class:'badge badge-warning'},'pending'));
         if(c.flags?.length)for(const f of c.flags)row.appendChild(el('span',{class:'badge badge-error'},f.flag_type));
+        if(c.pron_text_locked) row.appendChild(el('span',{class:'badge',style:'background:var(--bg-elevated);border:var(--border);color:var(--text-muted)',title:'TTS text manually edited — auto-pronunciation will not overwrite this'},'✎ edited'));
         // Per-chunk action row. The pass/fail/clear triplet lets the
         // user override QA on a single chunk; clear is only useful when
         // there's an existing status to revert.
@@ -1406,6 +1489,8 @@ function renderRvChunks(){
         actions.appendChild(el('button',{class:'btn btn-ghost btn-small',title:'Flag issue',onClick:()=>openFlag(c.id)},'⚑'));
         actions.appendChild(el('button',{class:'btn btn-ghost btn-small',title:'Edit chunk text',onClick:()=>openChunkEdit(c.id)},'✎'));
         if(c.has_audio) actions.appendChild(el('button',{class:'btn btn-ghost btn-small',title:'Regenerate this chunk',onClick:()=>regenChunk(c.id)},'↻'));
+        actions.appendChild(el('button',{class:'btn btn-ghost btn-small',title:'Split chunk at a chosen word',onClick:()=>openSplitModal(c.id)},'✂'));
+        actions.appendChild(el('button',{class:'btn btn-ghost btn-small',title:'Merge with next chunk',onClick:()=>mergeWithNext(c.id,'rv')},'↕'));
         row.appendChild(actions);
         bl.appendChild(row);p.appendChild(bl);
         if(c.scene_break_after)p.appendChild(el('div',{class:'scene-break-marker'},'· · ·'));
@@ -1662,37 +1747,180 @@ async function regenChunk(cid){
     }catch(e){ showToast(e.message,'error'); }
 }
 
+/* ═══ Split / Merge ═══ */
+
+let _splitChunkId = null;
+let _splitWordOffset = 0;   // split BEFORE this word index (0-based)
+let _splitWords = [];
+
+function openSplitModal(cid){
+    // Find the chunk text from whichever cache is loaded
+    let text = '';
+    const fromGen = _genChunks.find(x => x.id === cid);
+    if(fromGen) text = fromGen.original_text || '';
+    else{
+        // fallback: look in the player chunk list
+        const fromPl = player && player.chunks && player.chunks.find(x => x.id === cid);
+        if(fromPl) text = fromPl.original_text || fromPl.text || '';
+    }
+    if(!text){ showToast('Chunk text not available', 'error'); return; }
+
+    _splitChunkId = cid;
+    _splitWordOffset = 0;
+    _splitWords = text.split(/\s+/).filter(Boolean);
+
+    document.getElementById('split-chunk-label').textContent = cid;
+    document.getElementById('split-preview').textContent = '';
+    document.getElementById('split-confirm-btn').disabled = true;
+
+    _renderSplitWords();
+    openModal('split-chunk-modal');
+}
+
+function _renderSplitWords(){
+    const area = document.getElementById('split-word-area');
+    area.innerHTML = '';
+    _splitWords.forEach((w, i) => {
+        const span = document.createElement('span');
+        span.textContent = w + ' ';
+        span.dataset.idx = i;
+        span.style.cssText = 'cursor:pointer;border-radius:3px;padding:1px 0;';
+        if(_splitWordOffset > 0 && i >= _splitWordOffset){
+            span.style.background = 'var(--accent-soft)';
+            span.style.color = 'var(--accent)';
+        }
+        span.addEventListener('click', () => {
+            if(i === 0) return;  // can't split before first word
+            _splitWordOffset = i;
+            _renderSplitWords();
+            const preview = document.getElementById('split-preview');
+            preview.textContent = `Part 1: ${_splitWords.slice(0, i).length} words  ·  Part 2: ${_splitWords.slice(i).length} words`;
+            document.getElementById('split-confirm-btn').disabled = false;
+        });
+        area.appendChild(span);
+    });
+}
+
+async function confirmSplit(){
+    if(!_splitChunkId || _splitWordOffset <= 0) return;
+    try{
+        const res = await API.post(`/api/pipeline/${SLUG}/chunks/${_splitChunkId}/split`, {word_offset: _splitWordOffset});
+        closeModal('split-chunk-modal');
+        showToast(`Split into "${res.first.id}" and "${res.second.id}"`, 'success');
+        _splitChunkId = null;
+        // Reload whichever step is currently showing
+        await _reloadAfterChunkEdit();
+    }catch(e){ showToast('Split failed: ' + e.message, 'error'); }
+}
+
+async function mergeWithNext(cid, context){
+    // Find the chunk immediately following cid in the ordered list
+    let allChunks = [];
+    if(context === 'gen') allChunks = _genChunks;
+    else {
+        // review context — get ordered list from review endpoint
+        try{ allChunks = await API.get(`/api/audio/${SLUG}/review`); }catch(e){ showToast(e.message,'error'); return; }
+    }
+    const sorted = [...allChunks].sort((a,b) => (a.global_index||0) - (b.global_index||0));
+    const idx = sorted.findIndex(c => c.id === cid);
+    if(idx < 0 || idx >= sorted.length - 1){ showToast('No next chunk to merge with', 'error'); return; }
+    const nextChunk = sorted[idx + 1];
+
+    if(!confirm(`Merge "${cid}" with "${nextChunk.id}"?\n\nThis clears audio for both chunks and cannot be undone.`)) return;
+    try{
+        const res = await API.post(`/api/pipeline/${SLUG}/chunks/merge`, {chunk_ids: [cid, nextChunk.id]});
+        showToast(`Merged → "${res.merged_id}" (${res.word_count} words)`, 'success');
+        await _reloadAfterChunkEdit();
+    }catch(e){ showToast('Merge failed: ' + e.message, 'error'); }
+}
+
+async function _reloadAfterChunkEdit(){
+    // Refresh both the generate and review chunk caches
+    try{ _genChunks = await API.get(`/api/audio/${SLUG}/review`); _refreshSceneSymbolOptions(); genRenderChunks(); }catch(_){}
+    if(player){ try{ await player.init(); renderRvChunks(); }catch(_){} }
+}
+
 /* ═══ Export ═══ */
+function _renderExportResult(r){
+    const fileLine = r.file
+        ? `<span class="badge badge-success">${r.file}</span>`
+        : `<span class="badge badge-success">${(r.files||[]).length} files</span>`;
+    const total = r.total_seams || 0;
+    const flagged = r.flagged_seams || 0;
+    let seamLine = '';
+    if(total){
+        const cls = flagged ? 'badge-warning' : 'badge-info';
+        const label = flagged
+            ? `${flagged} seam${flagged===1?'':'s'} flagged of ${total}`
+            : `${total} seams clean`;
+        seamLine = ` <span class="badge ${cls}" style="margin-left:6px;cursor:${flagged?'pointer':'default'}" ${flagged?'onclick="toggleSeamReport()"':''}>${label}</span>`;
+    }
+    let detailsHtml = '';
+    if(flagged && r.flagged && r.flagged.length){
+        const rows = r.flagged.map(seam => {
+            const warns = (seam.warnings || []).map(w => `<li>${escapeHtml(w)}</li>`).join('');
+            return `<tr><td style="font-family:var(--font-mono);font-size:0.78rem;white-space:nowrap;padding:4px 10px">${seam.prev_chunk_id} → ${seam.curr_chunk_id}</td><td style="padding:4px 10px"><ul style="margin:0;padding-left:18px">${warns}</ul></td></tr>`;
+        }).join('');
+        detailsHtml = `<div id="seam-report" class="card mt-md" style="display:none;padding:0"><table class="data-table" style="width:100%"><thead><tr><th style="white-space:nowrap">Seam</th><th>Issues</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+    return {html: fileLine + seamLine + detailsHtml, flagged};
+}
+
+function _fmtDuration(sec){
+    if(sec == null || sec < 0) return '';
+    sec = Math.round(sec);
+    if(sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60), s2 = sec % 60;
+    return s2 ? `${m}m ${s2}s` : `${m}m`;
+}
+
+function _exportProgressHtml(p){
+    const cur = p.current || 0, tot = p.total || 0;
+    const pct = tot > 0 ? Math.round(cur / tot * 100) : 0;
+    const elapsed = p.elapsed_sec != null ? `elapsed ${_fmtDuration(p.elapsed_sec)}` : '';
+    const eta = p.eta_sec != null ? `~${_fmtDuration(p.eta_sec)} remaining` : '';
+    const timeInfo = [elapsed, eta].filter(Boolean).join(' · ');
+    const barFill = `width:${pct}%;background:var(--accent);height:6px;border-radius:3px;transition:width 0.4s`;
+    return `<div style="font-size:0.85rem;color:var(--text-muted)">` +
+        `Merging chunks… ${cur}/${tot} (${pct}%)` +
+        (timeInfo ? `<span style="margin-left:10px;color:var(--text-faint)">${timeInfo}</span>` : '') +
+        `</div>` +
+        `<div style="background:var(--bg-elevated);border-radius:3px;margin-top:6px;overflow:hidden">` +
+        `<div style="${barFill}"></div></div>`;
+}
+
 async function doExport(){
     const s = document.getElementById('export-status');
-    s.innerHTML = '<span class="text-muted">Exporting...</span>';
+    const exportBtn = s.previousElementSibling;
+    s.innerHTML = '<span class="text-muted">Starting export…</span>';
+    if(exportBtn) exportBtn.disabled = true;
     try{
-        const r = await API.post(`/api/pipeline/${SLUG}/export`, {scope: document.getElementById('export-scope').value});
-        const fileLine = r.file
-            ? `<span class="badge badge-success">${r.file}</span>`
-            : `<span class="badge badge-success">${(r.files||[]).length} files</span>`;
-        const total = r.total_seams || 0;
-        const flagged = r.flagged_seams || 0;
-        let seamLine = '';
-        if(total){
-            const cls = flagged ? 'badge-warning' : 'badge-info';
-            const label = flagged
-                ? `${flagged} seam${flagged===1?'':'s'} flagged of ${total}`
-                : `${total} seams clean`;
-            seamLine = ` <span class="badge ${cls}" style="margin-left:6px;cursor:${flagged?'pointer':'default'}" ${flagged?'onclick="toggleSeamReport()"':''}>${label}</span>`;
+        const res = await API.post(`/api/pipeline/${SLUG}/export`, {scope: document.getElementById('export-scope').value});
+        if(!res.task_id) throw new Error('Server did not return a task ID');
+        let done = false;
+        while(!done){
+            await new Promise(r=>setTimeout(r,1000));
+            const progress = await API.get(`/api/pipeline/${SLUG}/task/export`);
+            if(progress.status === 'done'){
+                const {html, flagged} = _renderExportResult(progress);
+                const elapsed = progress.elapsed_sec != null
+                    ? `<span style="font-size:0.82rem;color:var(--text-faint);margin-left:8px">in ${_fmtDuration(progress.elapsed_sec)}</span>`
+                    : '';
+                s.innerHTML = html + elapsed;
+                showToast(flagged ? `Done (${flagged} seams to review)` : 'Done', flagged ? 'info' : 'success');
+                done = true;
+            } else if(progress.status === 'error'){
+                s.innerHTML = `<span class="badge badge-error">${progress.message || 'Export failed'}</span>`;
+                showToast('Export failed', 'error');
+                done = true;
+            } else {
+                s.innerHTML = _exportProgressHtml(progress);
+            }
         }
-        let detailsHtml = '';
-        if(flagged && r.flagged && r.flagged.length){
-            const rows = r.flagged.map(seam => {
-                const warns = (seam.warnings || []).map(w => `<li>${escapeHtml(w)}</li>`).join('');
-                return `<tr><td style="font-family:var(--font-mono);font-size:0.78rem;white-space:nowrap;padding:4px 10px">${seam.prev_chunk_id} → ${seam.curr_chunk_id}</td><td style="padding:4px 10px"><ul style="margin:0;padding-left:18px">${warns}</ul></td></tr>`;
-            }).join('');
-            detailsHtml = `<div id="seam-report" class="card mt-md" style="display:none;padding:0"><table class="data-table" style="width:100%"><thead><tr><th style="white-space:nowrap">Seam</th><th>Issues</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-        }
-        s.innerHTML = fileLine + seamLine + detailsHtml;
-        showToast(flagged ? `Done (${flagged} seams to review)` : 'Done', flagged ? 'info' : 'success');
     }catch(e){
         s.innerHTML = `<span class="badge badge-error">${e.message}</span>`;
+    }finally{
+        if(exportBtn) exportBtn.disabled = false;
     }
 }
 

@@ -134,14 +134,17 @@ class GenerateRequest(BaseModel):
     voice: str = ""
     max_retries: int = 3
     mode: str = "pending"          # pending | all | failed
+    temperature: Optional[float] = None       # override TTS temperature (default from engine config)
+    repetition_penalty: Optional[float] = None  # override repetition penalty
 
 
 class QAThresholds(BaseModel):
-    min_similarity: float = 0.85
-    auto_pass: float = 0.95
+    min_similarity: float = 0.95
+    auto_pass: float = 0.995
     mode: str = "new"              # new = skip passing/override, all = recheck everything
     chunk_ids: list[str] = []      # if non-empty, only these chunks are QA'd
                                     # (overrides ``mode``).
+    method: str = "rule_based"     # rule_based | ml (ml not yet implemented)
 
 
 class ManualQAUpdate(BaseModel):

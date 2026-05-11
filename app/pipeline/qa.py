@@ -12,18 +12,147 @@ from app.database import ProjectDB
 from app.handlers.stt_base import STTHandler
 
 
+# Common English contractions → expanded form.
+# Applied to BOTH original and transcribed so that "I'm" ↔ "I am",
+# "we'll" ↔ "we will", etc. compare as equal.  Mapping keys are
+# already lowercased; values are the long form (also lowercase).
+_CONTRACTIONS: dict[str, str] = {
+    "i'm": "i am",
+    "you're": "you are",
+    "we're": "we are",
+    "they're": "they are",
+    "he's": "he is",
+    "she's": "she is",
+    "it's": "it is",
+    "that's": "that is",
+    "there's": "there is",
+    "what's": "what is",
+    "who's": "who is",
+    "here's": "here is",
+    "i'll": "i will",
+    "you'll": "you will",
+    "we'll": "we will",
+    "they'll": "they will",
+    "he'll": "he will",
+    "she'll": "she will",
+    "it'll": "it will",
+    "that'll": "that will",
+    "won't": "will not",
+    "can't": "cannot",
+    "don't": "do not",
+    "doesn't": "does not",
+    "didn't": "did not",
+    "isn't": "is not",
+    "aren't": "are not",
+    "wasn't": "was not",
+    "weren't": "were not",
+    "haven't": "have not",
+    "hasn't": "has not",
+    "hadn't": "had not",
+    "couldn't": "could not",
+    "wouldn't": "would not",
+    "shouldn't": "should not",
+    "i've": "i have",
+    "you've": "you have",
+    "we've": "we have",
+    "they've": "they have",
+    "i'd": "i would",
+    "you'd": "you would",
+    "he'd": "he would",
+    "she'd": "she would",
+    "we'd": "we would",
+    "they'd": "they would",
+    "let's": "let us",
+    "o'clock": "oclock",
+}
+
+_ONES = [
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty",
+         "sixty", "seventy", "eighty", "ninety"]
+
+
+def _int_to_words(n: int) -> str:
+    """Convert non-negative integer 0–9 999 to English words (no 'and')."""
+    if n < 0 or n > 9999:
+        return str(n)
+    if n == 0:
+        return "zero"
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        t, o = divmod(n, 10)
+        return _TENS[t] + (" " + _ONES[o] if o else "")
+    if n < 1000:
+        h, r = divmod(n, 100)
+        return _ONES[h] + " hundred" + (" " + _int_to_words(r) if r else "")
+    th, r = divmod(n, 1000)
+    return _ONES[th] + " thousand" + (" " + _int_to_words(r) if r else "")
+
+
+def _expand_numbers(text: str) -> str:
+    """Replace digit sequences with their word equivalents.
+
+    Whisper often writes spoken numbers as digits ("150") while the
+    manuscript has the word form ("hundred and fifty"). Converting digits
+    to words on both sides gives the diff a fair chance to align them.
+    The word "and" inside number phrases (e.g. "hundred and fifty") is
+    harmless — it appears on both sides and cancels out.
+    """
+    def _replace(m: re.Match) -> str:
+        try:
+            return _int_to_words(int(m.group()))
+        except (ValueError, OverflowError):
+            return m.group()
+    return re.sub(r"\b\d+\b", _replace, text)
+
+
+def _expand_contractions(text: str) -> str:
+    """Expand common English contractions word-by-word (text already lowercased)."""
+    words = text.split()
+    out = []
+    for w in words:
+        expanded = _CONTRACTIONS.get(w)
+        out.extend(expanded.split() if expanded else [w])
+    return " ".join(out)
+
+
 def normalize(text: str) -> str:
     """Normalize text for comparison: lowercase, strip punctuation, collapse whitespace."""
     text = re.sub(r"<[^>]+>", "", text)          # remove TTS tags
     text = text.replace("*", "")                  # remove italic markers
-    # Unify apostrophe and quote forms so curly (’) and straight (')
-    # don't end up on opposite sides of the diff. Without this,
-    # "gods'" (curly) → "gods" while the STT-side "gods'" (straight)
-    # stays "gods'", producing a phantom replace.
+    # Unify all apostrophe/quote variants to plain ASCII so curly and straight
+    # forms never end up on opposite sides of the diff.
     text = (text
-            .replace("‘", "'").replace("’", "'")
-            .replace("“", "").replace("”", ""))
+            .replace("’", "'").replace("‘", "'")  # curly single quotes
+            .replace("“", "").replace("”", "")               # curly double quotes
+            .replace("„", "").replace("‚", "")               # low double/single quotes
+            .replace("′", "'").replace("″", ""))       # prime / double-prime
+    text = text.replace("-", " ")                  # hyphens as word boundaries (well-off → well off)
     text = re.sub(r"[^\w\s']", "", text.lower())  # keep only word chars and apostrophes
+
+    # Expand contractions BEFORE possessive stripping so "i'm" → "i am"
+    # (not "im") and "we'll" → "we will" (not "well").
+    text = _expand_contractions(text)
+    # Convert digit sequences to word form so "150" == "hundred fifty".
+    text = _expand_numbers(text)
+
+    # Strip word-boundary apostrophes (used as single-quote marks) and
+    # normalize possessive endings so "Davis's" == "Davis'" == "Davis".
+    # Leading apostrophe: 'hello' (single-quoted) -> hello
+    # Trailing 's / ':   possessive forms -> base word
+    # Internal apostrophes in contractions (don't, it's, o'clock) are kept.
+    cleaned = []
+    for w in text.split():
+        w = re.sub(r"^'+", "", w)   # strip leading apostrophes
+        w = re.sub(r"'s?$", "", w)  # strip trailing possessive ('s or bare ')
+        if w:
+            cleaned.append(w)
+    text = " ".join(cleaned)
+
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -38,6 +167,64 @@ def _word_similarity(a: str, b: str) -> float:
 # "mispronunciation" rather than two unrelated words. Picked empirically:
 # "Ithas" ↔ "Ethos" sits around 0.6, "lake" ↔ "kingdom" sits around 0.18.
 _WORD_PAIR_SIM_THRESHOLD = 0.4
+
+# Similarity floor for collapsing compound-word splits (e.g. welloff ≈ wellof).
+# Higher than _WORD_PAIR_SIM_THRESHOLD because we are comparing full
+# concatenated strings (longer = more forgiving on absolute edits).
+_COMPOUND_SIM_THRESHOLD = 0.85
+
+
+def _collapse_compound_splits(diff: list[dict]) -> list[dict]:
+    """Re-mark delete/insert runs as equal when they are compound-word variants.
+
+    Handles cases where a hyphenated or closed compound word is transcribed
+    with or without a space (or hyphen), e.g.:
+      Pyrostick  ↔ Pyro stick   (one word vs two)
+      well-off   ↔ well off     (normalised to two words vs two words already equal)
+      welloff    ↔ well off     (one word vs two, exact concat match)
+      welloff    ↔ wellof       (near-match — dropped double consonant)
+
+    A contiguous run of delete/insert entries is collapsed to equal when the
+    concatenation of all original words equals (or is very similar to) the
+    concatenation of all transcribed words.
+    """
+    result = []
+    i = 0
+    while i < len(diff):
+        entry = diff[i]
+        if entry["type"] in ("equal", "replace"):
+            result.append(entry)
+            i += 1
+            continue
+
+        # Collect a contiguous block of delete/insert entries.
+        run_start = i
+        while i < len(diff) and diff[i]["type"] in ("delete", "insert"):
+            i += 1
+        run = diff[run_start:i]
+
+        orig_concat = "".join(e.get("original", "") for e in run)
+        trans_concat = "".join(e.get("transcribed", "") for e in run)
+
+        if orig_concat and trans_concat and (
+            orig_concat == trans_concat
+            or _word_similarity(orig_concat, trans_concat) >= _COMPOUND_SIM_THRESHOLD
+        ):
+            # Compound equivalents — emit one equal entry per original word.
+            orig_entries = [e for e in run if e.get("original")]
+            if not orig_entries:
+                orig_entries = [run[0]]
+            for oe in orig_entries:
+                result.append({
+                    "type": "equal",
+                    "original": oe["original"],
+                    "transcribed": oe["original"],
+                    "orig_index": oe["orig_index"],
+                })
+        else:
+            result.extend(run)
+
+    return result
 
 
 def word_level_diff(original: str, transcribed: str) -> list[dict]:
@@ -129,7 +316,7 @@ def word_level_diff(original: str, transcribed: str) -> list[dict]:
                     "orig_index": o_start + i,
                 })
 
-    return diff
+    return _collapse_compound_splits(diff)
 
 
 def compute_similarity(diff: list[dict]) -> float:
@@ -166,7 +353,7 @@ def is_pron_substitution(original_word: str, transcribed_word: str,
 def qa_single_chunk(stt: STTHandler, db: ProjectDB,
                     chunk: dict, generation: dict,
                     pron_map: dict[str, str] | None = None,
-                    threshold: float = 0.85) -> dict:
+                    threshold: float = 0.95) -> dict:
     """Run QA on a single chunk's generation.
 
     Returns result dict with score, diff, and status.
@@ -224,7 +411,7 @@ def qa_single_chunk(stt: STTHandler, db: ProjectDB,
 
 def qa_batch(stt: STTHandler, db: ProjectDB,
              chunk_ids: list[str] | None = None,
-             threshold: float = 0.85,
+             threshold: float = 0.95,
              pron_map: dict[str, str] | None = None,
              progress_callback=None,
              stop_check=None) -> dict:
